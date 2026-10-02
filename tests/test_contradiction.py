@@ -31,9 +31,20 @@ def _failed(result):
     return {c.name for c in result.checks if not c.passed}
 
 
-def test_hand_labels_mark_exactly_the_two_conflict_cases():
+def test_hand_labels_mark_exactly_the_conflict_cases():
     assert {c.case_id for c in ASSESSMENTS if c.conflict} == {
-        "recovery_conflict_good_data_exhausted", "recovery_conflict_poor_data_energetic"}
+        "recovery_conflict_good_data_exhausted", "recovery_conflict_poor_data_energetic",
+        "unc_conflict_recovery"}
+    # mixed wearable signals with no self-report are ambiguous, not a conflict (ADR-012)
+    assert not BY_ID["unc_ambiguous_recovery"].conflict
+
+
+def test_intensified_verdict_after_flagging_conflict_is_unsupported_resolution():
+    # regression (contradiction v0.1.1): "definitely" between "you are" and the verdict
+    # previously hid the verdict from no_unsupported_resolution
+    answer = (WEARABLE + " You reported feeling exhausted this morning. These two signals "
+                         "conflict, but you are definitely well recovered.")
+    assert _failed(_results(CONFLICT, answer)["contradiction"]) == {"no_unsupported_resolution"}
 
 
 @pytest.mark.parametrize("case", ASSESSMENTS, ids=lambda c: c.case_id)

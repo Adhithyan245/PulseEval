@@ -11,7 +11,8 @@ For assessments (ADR-010) the required records are the labelled wearable + self-
 and relevance uses the case's `relevant_names`; how a wearable/self-report conflict is
 represented is contradiction handling, not grounding. For relationships (ADR-011) the
 required records are the paired observations plus any causal-basis records; how the
-relationship is described causally is causal restraint.
+relationship is described causally is causal restraint. Open questions (ADR-012) require no
+records, but anything cited must be relevant and in-window.
 
 Knowability at as_of (late-synced / future data) is temporal consistency, and whether the
 claim is *right* is answer correctness; this evaluator only asks whether the claim is
@@ -26,13 +27,14 @@ from datetime import datetime
 from pulseeval.agent import AgentTrace
 from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureType, build_result
 from pulseeval.evaluation.text import affirmed_number, asserts, value_mentions
-from pulseeval.scenarios import AssessmentCase, Case, NumericCase, RelationshipCase, StateCase
+from pulseeval.scenarios import (AssessmentCase, Case, NumericCase, OpenQuestionCase,
+                                 RelationshipCase, StateCase)
 from pulseeval.timeline import Record
 
-GROUNDING_EVALUATOR_VERSION = "0.3.0"
+GROUNDING_EVALUATOR_VERSION = "0.4.0"
 _EPS = 1e-9
 _G = FailureType.GROUNDING_FAILURE
-_OPEN = AssessmentCase | RelationshipCase  # no single claimed value to support
+_OPEN = AssessmentCase | RelationshipCase | OpenQuestionCase  # no single claimed value
 
 
 def _window(case: Case) -> tuple[datetime | None, datetime]:
@@ -47,6 +49,8 @@ def _required(case: Case) -> list[str]:
         return case.wearable_record_ids + case.self_report_record_ids
     if isinstance(case, RelationshipCase):
         return case.relationship_record_ids + case.causal_basis_record_ids
+    if isinstance(case, OpenQuestionCase):
+        return []  # nothing is required; whatever is cited must still be relevant and in-window
     return [case.expected_record_id]
 
 

@@ -4,22 +4,22 @@
 
 Phase: 2 — Core Evaluation
 
-Status: IN PROGRESS (stopped for review)
+Status: COMPLETE (Phase 2: all 7 dimensions implemented; stopped for review)
 
 Last completed:
-Causal-restraint evaluator (6th dimension, ADR-011): RelationshipCase with structured causal-support labels, clause-aware causal-claim parser, 4 synthetic sleep/HRV cases, agent v0.5.0 with `causal_overclaim`. 182 tests pass (178 + 4 skipped without local PHIA data).
+Uncertainty/abstention evaluator (7th dimension, ADR-012): certainty labels, OpenQuestionCase, mixed wearable direction, 7 synthetic cases, agent v0.6.0 with `overconfident` and `false_abstention`. 258 tests pass (254 + 4 skipped without local PHIA data).
 
 Currently working on:
 Nothing — awaiting review.
 
 Next task:
-Proposed: uncertainty/abstention evaluator — the last Phase 2 dimension. Not started (user instruction).
+Phase 3 (memory evaluation) — not started (user instruction: stop after Phase 2).
 
 Blocked by:
 None.
 
 Last architecture change:
-ADR-011 (RelationshipCase + structured causal-support labels) — Implemented.
+ADR-012 (certainty labels + OpenQuestionCase + mixed wearable direction) — Implemented.
 
 Last context update:
 2026-10-02
@@ -48,28 +48,30 @@ Not a health chatbot, diagnosis/treatment/clinical-decision system, generic RAG 
 | Component | State |
 |---|---|
 | Timeline schema (`timeline.py`) | Implemented, tested |
-| SUT agent v0.5.0 (`agent.py`): intents = current training goal, N-day mean resting HR (states coverage), recovery assessment, sleep/HRV relationship | Implemented, tested |
+| SUT agent v0.6.0 (`agent.py`): intents = current training goal, N-day mean resting HR (states coverage), recovery assessment, sleep/HRV relationship, out-of-scope questions (illness, sleep stages) | Implemented, tested |
 | Agent trace schema | Implemented |
 | Temporal-consistency evaluator v0.3.0 (knowability only) | Implemented, tested |
-| Evidence-grounding evaluator v0.3.0 (handles assessments, relationships) | Implemented, tested |
-| Answer-correctness evaluator v0.3.0 (state, numeric, relationship group means; N/A for assessments) | Implemented, tested |
+| Evidence-grounding evaluator v0.4.0 (handles assessments, relationships, open questions) | Implemented, tested |
+| Answer-correctness evaluator v0.3.1 (state, numeric, relationship group means; N/A for assessments, open questions) | Implemented, tested |
 | Missing-data handling evaluator v0.1.1 (numeric cases only) | Implemented, tested |
-| Contradiction-handling evaluator v0.1.0 (assessment cases only) | Implemented, tested |
+| Contradiction-handling evaluator v0.1.1 (assessment cases only) | Implemented, tested |
 | Causal-restraint evaluator v0.1.0 (relationship cases only) | Implemented, tested |
-| Scenarios v0.6.0: 4 state + 3 numeric + 6 assessment + 4 relationship fixture cases, each with `provenance` | Implemented |
+| Uncertainty/abstention evaluator v0.1.0 (certainty-labelled cases only) | Implemented, tested |
+| Scenarios v0.7.0: 24 fixture cases (4 state, 5 numeric, 9 assessment, 4 relationship, 2 open), each with `provenance`; 7 certainty-labelled | Implemented |
 | PHIA adapter (`phia.py`): 1 user, 2 numeric cases, PulseEval-recomputed values | Implemented, tested (skips without local data) |
 | CLI report (`python -m pulseeval [--phia DIR]`) | Implemented |
 | MMASH | Verified (§8); not downloaded |
-| Uncertainty/abstention evaluator, memory lifecycle, MMASH, LLM agent, UI | Not started |
+| Memory lifecycle (Phase 3), MMASH, LLM agent, UI | Not started |
 
 ## 6. Current Architecture
 
 ```text
-Case = StateCase | NumericCase | AssessmentCase | RelationshipCase   (fixture: scenarios.py | PHIA: phia.py)
+Case = StateCase | NumericCase | AssessmentCase | RelationshipCase | OpenQuestionCase
+       (fixture: scenarios.py | PHIA: phia.py); optional `certainty` label on any kind
   timeline + question + as_of + target_name + expectation + provenance
   → HealthAgent.answer()          # SUT; tools: retrieve_context, latest_value, mean_value,
                                   #   carry_forward (fault), compare_to_baseline, latest_self_report,
-                                  #   pair_by_day
+                                  #   pair_by_day, check_scope
   → AgentTrace                    # structured; every tool call recorded
   → run_suite: every case × every applicable evaluator (None = not applicable, ADR-009)
       temporal_consistency   — was anything retrieved/cited unknowable at as_of?
@@ -78,6 +80,7 @@ Case = StateCase | NumericCase | AssessmentCase | RelationshipCase   (fixture: s
       missing_data           — (numeric only) is window coverage represented accurately?
       contradiction_handling — (assessment only) is a wearable/self-report conflict represented accurately?
       causal_restraint       — (relationship only) is causal language justified by the case's labels?
+      uncertainty_abstention — (certainty-labelled only) does expressed certainty match evidence sufficiency?
   → EvaluationResult per (case, applicable evaluator): checks + typed Failures
   → CLI text report / JSON
 ```
@@ -105,9 +108,10 @@ src/pulseeval/
     missing_data.py    # missing-data handling (coverage representation; numeric only)
     contradiction.py   # contradiction handling (wearable vs self-report; assessments only)
     causal.py          # causal restraint (relationship cases only)
+    uncertainty.py     # uncertainty / abstention (certainty-labelled cases only)
 tests/
   test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_missing_data.py
-  test_contradiction.py  test_causal.py  test_suite.py  test_phia.py
+  test_contradiction.py  test_causal.py  test_uncertainty.py  test_suite.py  test_phia.py
 data/raw/            # git-ignored; local copies only (data/raw/phia/: 14 files, ~700 KB)
 ```
 
@@ -170,13 +174,15 @@ Verified 2026-10-02 by reading official pages and the PHIA repository's code/dat
 
 `MemberTimeline`: `member_id, records` (input order not meaningful).
 
-Case base: `case_id, description, timeline, question, as_of, target_name, provenance`.
+Case base: `case_id, description, timeline, question, as_of, target_name, provenance`, plus optional `certainty` ∈ {direct_answer_supported, uncertainty_required, abstention_required, conflict_requires_qualification} (default None) and `conclusion_terms` (ADR-012).
 `StateCase`: + `expected_record_id, expected_value: str`. Valid evidence window: event_time ≤ as_of.
 `NumericCase`: + `window_start, expected_value: float, unit, tolerance (absolute), expected_record_ids, expected_observations`. Aggregate is the mean over [window_start, as_of]. `expected_observations` = daily observations a complete window would contain (hand-labelled); available = `len(expected_record_ids)` (knowable at as_of); missing days = window days without an expected record.
 
 `AssessmentCase` (ADR-010): + `window_start, wearable_record_ids, self_report_record_ids, wearable_indicates ∈ {good, poor}, self_report_indicates ∈ {good, poor, None}, relevant_names`; property `conflict` = both directions known and different. Self-reports are `Record(kind="subjective", name="energy_report", value=<word>)`.
 
 `RelationshipCase` (ADR-011): + `window_start, exposure_name, outcome_name, exposure_terms, outcome_terms, relationship_record_ids, observed_direction ∈ {positive, negative, none}, causal_support ∈ {association_only, supported}, causal_basis_record_ids, confounder_names, expected_group_means, unit, tolerance`. Validator: `supported` ⇔ non-empty `causal_basis_record_ids`. `relevant_names` = exposure, outcome, confounders, basis record names.
+
+`OpenQuestionCase` (ADR-012): + `window_start, relevant_names`. For questions the evidence cannot answer; only temporal, grounding and uncertainty apply. `AssessmentCase.wearable_indicates` also allows "mixed"; `conflict` requires a non-mixed wearable direction.
 
 `AgentTrace`: `agent_version, agent_config, query, member_id, as_of, time_window, retrieved_context, tools_called[ToolCall{name, inputs, outputs}], memories_used, evidence_used, final_answer, uncertainty, abstention`.
 
@@ -185,26 +191,26 @@ Case base: `case_id, description, timeline, question, as_of, target_name, proven
 
 ## 10. System Under Test
 
-`HealthAgent(ordering, respect_as_of, respect_window, report_coverage, impute_missing, ignore_self_report, dismiss_self_report, causal_overclaim)` v0.5.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
+`HealthAgent(ordering, respect_as_of, respect_window, report_coverage, impute_missing, ignore_self_report, dismiss_self_report, causal_overclaim, overconfident, false_abstention)` v0.6.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
 - Reference config: chronological, respects as_of, respects window, reports coverage, never imputes.
-- Fault-injected configs (CLI names): `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history), `silent_gaps` (omits coverage statement), `impute` (carries the previous reading into missing days, recorded as a `carry_forward` tool call, and claims full coverage), `ignore_self_report` (assesses from wearable data only), `dismiss_self_report` (on conflict: "…but your data shows you are actually well recovered"), `causal_overclaim` (same records, window and group means, but "Sleeping less caused your HRV to drop."). `no_window` also makes the agent use self-reports of any age.
-- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]; answer states "(k of N days had data)" or "(all N days had data)"); "how is my recovery" (today's HRV and resting HR vs the prior 7 days → good / reduced / mixed; latest self-report from the past 24 h; states a conflict explicitly when the directions differ); "is my HRV related to how much I sleep" (pairs sleep and HRV by day over 14 days, compares the shortest vs longest half of nights, reports both group means; < 3 ms difference → "does not show a clear association"; otherwise states the association with an explicit caveat, or causal wording only when `sleep_protocol` assignment records exist). Anything else → explicit abstention.
+- Fault-injected configs (CLI names): `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history), `silent_gaps` (omits coverage statement), `impute` (carries the previous reading into missing days, recorded as a `carry_forward` tool call, and claims full coverage), `ignore_self_report` (assesses from wearable data only), `dismiss_self_report` (on conflict: "…but your data shows you are actually well recovered"), `causal_overclaim` (same records, window and group means, but "Sleeping less caused your HRV to drop."), `overconfident` (definitive framing where evidence is thin, mixed, conflicting or out of scope — e.g. "This is definitely your true average for the week.", "you are definitely getting sick"), `false_abstention` (keeps the evidence it gathered but answers "I can't determine that from the available data."). `no_window` also makes the agent use self-reports of any age.
+- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]; answer states "(k of N days had data)" or "(all N days had data)"); "how is my recovery" (today's HRV and resting HR vs the prior 7 days → good / reduced / mixed; latest self-report from the past 24 h; states a conflict explicitly when the directions differ); "is my HRV related to how much I sleep" (pairs sleep and HRV by day over 14 days, compares the shortest vs longest half of nights, reports both group means; < 3 ms difference → "does not show a clear association"; otherwise states the association with an explicit caveat, or causal wording only when `sleep_protocol` assignment records exist). "am I getting sick" / "how much deep sleep" → abstains and says what the data cannot establish. Reference also adds an explicit caveat when fewer than half the requested days have data, and when wearable signals are mixed. Anything else → explicit abstention.
 
 ## 11. Evaluation Engine
 
-Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Six independent dimensions (ADR-008), each its own evaluator. An evaluator returns `None` when its dimension does not apply to a case kind (ADR-009); pass rates are over applicable cases only.
+Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Seven independent dimensions (ADR-008), each its own evaluator. An evaluator returns `None` when its dimension does not apply to a case kind (ADR-009); pass rates are over applicable cases only.
 
 ## 12. Evaluation Dimensions
 
 | Dimension | Status |
 |---|---|
 | Temporal consistency | **Implemented** v0.3.0 |
-| Evidence grounding | **Implemented** v0.3.0 |
-| Answer correctness (numerical, current-state, relationship group means) | **Implemented** v0.3.0 |
+| Evidence grounding | **Implemented** v0.4.0 |
+| Answer correctness (numerical, current-state, relationship group means) | **Implemented** v0.3.1 |
 | Missing-data handling | **Implemented** v0.1.1 (numeric cases) |
-| Contradiction handling (wearable vs self-report) | **Implemented** v0.1.0 (assessment cases, synthetic self-reports) |
+| Contradiction handling (wearable vs self-report) | **Implemented** v0.1.1 (assessment cases, synthetic self-reports) |
 | Causal restraint | **Implemented** v0.1.0 (relationship cases) |
-| Uncertainty/abstention | Planned (Phase 2) |
+| Uncertainty/abstention | **Implemented** v0.1.0 (certainty-labelled cases) |
 | Memory validity | Planned (Phase 3) |
 | Personalization, tool-call correctness | Planned (Phase 2–4) |
 
@@ -243,13 +249,22 @@ Grounding for assessments: required = labelled wearable + self-report ids; relev
 - `association_not_overstated` — no association or causal claim when `observed_direction = none`; no stated direction opposite to the observed one. Applies to supported cases too.
 Answer correctness for relationships: `group_means_reported` (each labelled group mean affirmed in the unit ± tolerance). Grounding: required = relationship records + causal-basis records; relevant = `relevant_names`; no claim-support check.
 
+**uncertainty_abstention** (cases with `certainty` set) — `UNCERTAINTY_FAILURE` / `ABSTENTION_FAILURE`. **It does not estimate statistical confidence, clinical risk or medical probability; it checks whether the agent's expressed certainty and willingness to answer match the evidence sufficiency labelled on the case.** A separate dimension because an answer can cite the right records, use the right window and numbers, state coverage, represent conflicts and avoid causal claims, and still be more (or less) certain than the evidence allows.
+- `no_unnecessary_abstention` (direct_answer_supported) — no abstention flag and no refusal ("I can't determine", "insufficient"). Hedges ("about", "may vary") and even certainty words are fine.
+- `uncertainty_expressed` (uncertainty_required, conflict_requires_qualification) — a limitation (unclear, uncertain, so few days, conflict, mixed, different directions, "whether"/"cannot") or a hedge (may, might, could, suggests).
+- `abstained_or_qualified` (abstention_required) — abstention flag, a refusal, or a limitation; a bare hedge ("you may be getting sick") is not enough.
+- `no_unjustified_certainty` (every level except direct) — no certainty marker (definitely, clearly, certainly, no doubt, this proves …) and no definitive conclusion using `conclusion_terms`. Strong words inside negated, refused, hypothetical or quoted framing do not count ("I would not conclude that you are definitely getting sick"); a negated certainty word ("not clearly") is itself a limitation; a negative conclusion ("you are not getting sick") is still definitive.
+Abstaining when only uncertainty is required passes this dimension (declining is never overconfident); any cost shows up in answer correctness / missing-data instead.
+
+**Certainty parsing (`text.certainty_claims`):** per clause with quoted spans masked; refusal patterns (can't/cannot determine/tell/answer/establish, insufficient, not enough, don't have … data, do not establish, would not conclude, would need …); limitation = refusal, epistemic marker, negated certainty word, or a non-negated uncertainty word; certainty markers only in clauses without a limitation, outside negation and hypothetical prefixes (plus built-in-negation phrases "no doubt", "without doubt"); definitive conclusion = conclusion term in a clause without limitation, hedge or hypothetical prefix.
+
 **Causal-claim parsing (`text.causal_claims`):** each causal cue (caused, led to, is why, because, due to, resulted in, lowered/raised/reduced … your, …) in a clause that mentions **both** exposure and outcome terms is classified by context: *quoted* (inside double quotes), *uncertain* (whether / cannot / unclear / no evidence … before the cue), *hypothetical* (if / suppose / imagine …), *negated* (not / no / never / n't / cannot / without in the clause), *hedged* (may / might / could / would …), else *asserted*. Its own negator set is used because the shared one treats "dropped" as goal-abandonment negation. *Qualified* = causal vocabulary (causation, cause, prove, proof, or a cue) in a negated or uncertain clause, or a non-negated alternative-explanation phrase (other factors, confound…). Association = affirmed association/pattern cue (associated, correlated, related, tended to, moved together, on days when, following …). Direction = unambiguous comparative pair (lower/higher × less/more).
 
 **Coverage parsing (`text.coverage_claims`):** lexical patterns applied in order with matched spans removed: "M of N days missing", "A of N days", "all N days", "based on (the) A (available) days", "M days missing", "A readings / days with data"; number words zero–twenty; counts are read regardless of clause polarity; completeness/gap/imputation wording is polarity-aware ("without imputing" is not an imputation claim).
 
 **Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues, contrastive negation only (`, not` / `and not` / `, without`), and `, so` (consequence clause; added with contradiction handling so "…conflict, so don't ignore…" keeps the conflict statement affirmed); "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
 
-**Separation examples (observed):** `causal_overclaim` on `relation_association_only` and `relation_confounded_by_stress` → only causal_restraint fails (temporal, grounding, answer pass; missing-data and contradiction not applicable); on `relation_supported_by_protocol` the same causal wording passes. Hand-built traces: overclaim + HRV records dropped from evidence → grounding + causal fail; overclaim + retrieved future record → temporal + causal fail. `dismiss_self_report` on both conflict cases → only contradiction_handling fails (cites both sources; resolves the conflict for the data). `ignore_self_report` on agreement cases → only grounding fails (report not cited, no conflict to mishandle). `no_as_of` on `recovery_late_self_report` → temporal + contradiction (invented conflict) fail, grounding passes. `no_window` on `recovery_stale_self_report` → grounding (out of window) + contradiction fail, temporal passes. `silent_gaps` on PHIA 465 14-day (13/14) and on the fixture gap cases → only missing_data fails (correct, grounded, knowable answer presented as complete). `impute` on `rhr_mean_7d_late_sync` → only missing_data fails (the carried-forward value leaves the mean unchanged at 55.0). `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
+**Separation examples (observed):** `overconfident` on `unc_sparse_rhr_7d` → only uncertainty_abstention fails (temporal, grounding, answer and missing-data pass: right records, window, 54.5 bpm and "2 of 7 days had data"); on `unc_ambiguous_recovery` contradiction passes and only uncertainty fails. `false_abstention` on `unc_direct_recovery_agree` → only uncertainty_abstention fails (the reverse direction). Overlap by design: a definitive resolution of a real wearable/self-report conflict fails both contradiction handling and uncertainty. `causal_overclaim` on `relation_association_only` and `relation_confounded_by_stress` → only causal_restraint fails (temporal, grounding, answer pass; missing-data and contradiction not applicable); on `relation_supported_by_protocol` the same causal wording passes. Hand-built traces: overclaim + HRV records dropped from evidence → grounding + causal fail; overclaim + retrieved future record → temporal + causal fail. `dismiss_self_report` on both conflict cases → only contradiction_handling fails (cites both sources; resolves the conflict for the data). `ignore_self_report` on agreement cases → only grounding fails (report not cited, no conflict to mishandle). `no_as_of` on `recovery_late_self_report` → temporal + contradiction (invented conflict) fail, grounding passes. `no_window` on `recovery_stale_self_report` → grounding (out of window) + contradiction fail, temporal passes. `silent_gaps` on PHIA 465 14-day (13/14) and on the fixture gap cases → only missing_data fails (correct, grounded, knowable answer presented as complete). `impute` on `rhr_mean_7d_late_sync` → only missing_data fails (the carried-forward value leaves the mean unchanged at 55.0). `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
 
 ## 13. Adversarial Test Cases
 
@@ -259,9 +274,11 @@ Assessment suite (member M002, as_of 2026-04-15 09:00; baseline 04-08..04-14 HRV
 
 Relationship suite (member M003, as_of 2026-05-11 09:00, 14-day window; 10 paired mornings 05-01..05-10; sleep 6.1/7.9/5.8/8.2/6.4/7.6/5.9/8.0/6.3/7.7 h): `relation_association_only` (HRV 45–49 ms on the 5 short nights, 60–64 ms on the 5 long; means 235/5 = 47.0 and 310/5 = 62.0; association only); `relation_confounded_by_stress` (same, plus `stress_report` "high" on exactly the short nights; association only, confounder labelled); `relation_supported_by_protocol` (same, plus `sleep_protocol` assignment records set the evening before — causal support is a fixture assumption grounded in those records); `relation_no_pattern` (HRV flat: 274/5 = 54.8 vs 276/5 = 55.2; direction none).
 
+Uncertainty suite (ADR-012; built from existing fixtures plus a label): `unc_direct_rhr_7d` and `unc_direct_recovery_agree` (direct_answer_supported); `unc_sparse_rhr_7d` (2 of 7 days, 54+55 → 54.5 bpm; uncertainty_required); `unc_missing_sleep_stages` (open question; only total sleep exists; abstention_required); `unc_ambiguous_recovery` (HRV 62 and resting HR 59, both above baseline → mixed; uncertainty_required); `unc_conflict_recovery` (good data + "exhausted"; conflict_requires_qualification); `unc_out_of_scope_illness` (open question "Am I getting sick?" on HR/HRV data; abstention_required).
+
 PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.634286, 7/7), `phia465_rhr_mean_14d` (59.649231, 13/14 — 2023-10-21 missing in source, never imputed; missing-data regression case).
 
-Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage); contradiction perturbations (conflict acknowledged three ways; wearable only; self-report only + verdict; conflict not named; conflict named then resolved; self-report dismissed; wearable dismissed; agreement with/without invented conflict; negated conflict; verdict when sources agree; negated dismissal); causal parser tests (association phrasings, six asserted claims, negated / uncertain / hypothetical / hedged / quoted, qualifiers vs. non-qualifiers, unrelated "because", direction) and evaluator tests (restrained answers, unsupported claims, hypothetical-only, confounded, supported (permitted / wrong direction), no-pattern, the four independence cases, non-applicability).
+Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage); contradiction perturbations (conflict acknowledged three ways; wearable only; self-report only + verdict; conflict not named; conflict named then resolved; self-report dismissed; wearable dismissed; agreement with/without invented conflict; negated conflict; verdict when sources agree; negated dismissal); causal parser tests (association phrasings, six asserted claims, negated / uncertain / hypothetical / hedged / quoted, qualifiers vs. non-qualifiers, unrelated "because", direction) and evaluator tests (restrained answers, unsupported claims, hypothetical-only, confounded, supported (permitted / wrong direction), no-pattern, the four independence cases, non-applicability); certainty parser tests (refusals, limitations, hedges, strong words under negation / refusal / hypothetical / quote, "not clearly", unqualified certainty, definitive conclusions incl. negative) and evaluator tests (direct plain / cautious / confident, refusing a supported answer, sparse with / without uncertainty, ambiguous, conflict, out-of-scope abstention vs. conclusion vs. hedge, fabricated sleep stages, quoted / hypothetical framing, both independence directions, non-applicability).
 
 Planned: stale memory, missing context, counterfactual.
 
@@ -271,13 +288,13 @@ Per evaluator: pass rate = passed cases / evaluated cases; failures by type and 
 
 ## 15. Development Phases
 
-0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅, missing-data ✅, contradiction ✅, causal restraint ✅; remaining: uncertainty/abstention) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
+0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅, missing-data ✅, contradiction ✅, causal restraint ✅, uncertainty/abstention ✅ — Phase 2 complete) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
 
 ## 16. Completed Work
 
 - Phase 0: empty directory audited; Python 3.11, pydantic 2.9, pytest; no API key.
 - Phase 1: vertical slice.
-- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling; contradiction handling (synthetic self-reports); causal restraint (RelationshipCase).
+- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling; contradiction handling (synthetic self-reports); causal restraint (RelationshipCase); uncertainty/abstention (certainty labels, OpenQuestionCase). Phase 2 complete.
 - Git: `origin` = https://github.com/Adhithyan245/PulseEval.git; history rewritten 2026-10-02 to remove Claude co-author trailers (user decision); commits use the user's identity only.
 
 ## 17. In-Progress Work
@@ -286,7 +303,7 @@ None (stopped for review).
 
 ## 18. Planned Work
 
-1. Uncertainty/abstention evaluator.
+1. Phase 3 — memory evaluation (create / update / invalidate / expire / delete); not started.
 3. Later (deferred by user): MMASH questionnaires as a real self-report source for contradiction cases.
 
 ## 19. Deferred Work
@@ -301,6 +318,7 @@ LLM-backed agent and LLM judge (until the deterministic layer is trusted — use
 - Answer-text analysis is lexical English heuristics: misses paraphrases ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation; errs toward failing answers it cannot parse.
 - Grounding `evidence_supports_claim` (state) only recognises claims of values that exist in the timeline; a fabricated free-text value is caught by answer_correctness, not grounding. Numeric support assumes the aggregate is a mean.
 - Numeric tolerance is absolute; number extraction requires the unit right after the number.
+- Uncertainty/abstention: **behavioural, not statistical or clinical** — certainty labels are fixture judgements of evidence sufficiency. Parsing is lexical: uncertainty expressed only through unlisted wording ("I'd take this with a grain of salt") is missed; certainty words outside the list ("undeniably") are missed; `conclusion_terms` must be supplied per case; the structured `abstention` flag is trusted.
 - Causal restraint: **PulseEval judges causal language against case labels; it does not perform causal inference.** Causal-support labels are fixture assumptions (the protocol case is not evidence of a physiological effect). Parsing is lexical and clause-based: claims must mention both exposure and outcome terms in one clause ("That's because of your sleep." is missed); causal verbs used non-causally with both terms can false-positive; supported cases permit causal wording without checking that it cites the basis; direction is read only from unambiguous comparative pairs.
 - Contradiction: self-reports are synthetic single words with hand-labelled directions; the agent's good/poor rule (HRV and RHR vs a 7-day mean) is a fixture convention, not a physiological standard. Conflict/dismissal/verdict detection is lexical (misses e.g. "your body says otherwise", sarcasm, conflicts stated across sentences without conflict words); a verdict inside an attributed clause ("the data shows you are recovered") is treated as attributed.
 - Missing-data: assumes one expected observation per day; coverage parsing is lexical (misses e.g. "a day short", "except Saturday"); dates recognised only as ISO or "Month D"; a value for a missing day stated in a different sentence from the date is not detected.
@@ -436,6 +454,17 @@ Trade-offs: labels are fixture assumptions on synthetic data, not physiological 
 Affected components: scenarios.py, agent.py, evaluation/{text,grounding,answer,causal (new)}.py, CLI, tests.
 Scope impact: Minor
 
+### ADR-012 — Certainty labels, OpenQuestionCase, mixed wearable direction
+
+Status: Implemented
+Date: 2026-10-02
+Original approach: no case states how much certainty its evidence supports; every case kind presumes an answerable question.
+New approach: two optional fields on every case — `certainty` ∈ {direct_answer_supported, uncertainty_required, abstention_required, conflict_requires_qualification} (default None) and `conclusion_terms` (wording of the conclusion the question asks about). A new `uncertainty_abstention` evaluator applies only to cases with `certainty` set (ADR-009), so unlabelled cases add no results. New minimal case kind `OpenQuestionCase` (timeline + window + relevant record names) for questions no other kind can represent (out-of-scope inference such as illness; data that does not exist such as sleep stages); only temporal, grounding and uncertainty apply to it. `AssessmentCase.wearable_indicates` gains "mixed" (signals point in different directions); `conflict` now also requires a non-mixed wearable direction — unchanged for all existing cases.
+Reason: the evaluator must reason from structured evidence-sufficiency labels, not from prose; out-of-scope and ambiguous situations were not representable.
+Trade-offs: certainty levels are hand labels on synthetic fixtures; this is not statistical, clinical or probabilistic confidence.
+Affected components: scenarios.py, agent.py, evaluation/{text,grounding,answer,uncertainty (new)}.py, CLI, tests.
+Scope impact: Minor
+
 ## 23. Change Log
 
 ### 2026-10-02 — Phase 0 + Phase 1 vertical slice
@@ -506,6 +535,16 @@ Change: ADR-011 `RelationshipCase` (+ validator); 4 synthetic sleep/HRV cases (a
 Reason: sixth Phase 2 dimension; causal language must be judged against labelled evidence semantics, not a keyword list.
 Impact: Observed runs (fixture + PHIA, 19 cases), order temporal / grounding / answer / missing_data / contradiction / causal: reference 19/19, 19/19, 13/13, 5/5, 6/6, 4/4; `input_order` 19/19, 18/19, 12/13, 5/5, 6/6, 4/4; `no_as_of` 15/19, 17/19, 10/13, 4/5, 5/6, 4/4; `no_window` 19/19, 13/19, 8/13, 2/5, 5/6, 4/4; `silent_gaps` 19/19, 19/19, 13/13, 2/5, 6/6, 4/4; `impute` 19/19, 17/19, 11/13, 2/5, 6/6, 4/4; `ignore_self_report` 19/19, 15/19, 13/13, 5/5, 4/6, 4/4; `dismiss_self_report` 19/19, 19/19, 13/13, 5/5, 4/6, 4/4; `causal_overclaim` 19/19, 19/19, 13/13, 5/5, 6/6, 2/4. 182 tests pass; without PHIA data 178 pass + 4 skipped. Mutation check: replacing context classification with "every cue is asserted" makes 7 causal tests fail. Control-character scan of files and all 27 compiled regexes: clean.
 Files affected: agent.py, scenarios.py, __main__.py, evaluation/{__init__,text,grounding,answer,causal (new)}.py, tests/{test_causal (new),test_suite}.py, README.md, PROJECT_CONTEXT.md.
+Scope impact: Minor
+
+### 2026-10-02 — Uncertainty/abstention evaluator (Phase 2 complete)
+
+Status: Implemented
+Original plan: uncertainty/abstention as the last Phase 2 dimension.
+Change: ADR-012 (`certainty` + `conclusion_terms` on all cases; `OpenQuestionCase`; "mixed" wearable direction); 7 labelled cases reusing existing fixtures; `text.certainty_claims`; `evaluation/uncertainty.py` (4 checks); grounding v0.4.0 and answer v0.3.1 handle open questions; agent v0.6.0 out-of-scope intents, reference caveats for sparse and mixed evidence, faults `overconfident`, `false_abstention`; scenarios v0.7.0. Contradiction v0.1.1: `_VERDICT` now allows certainty modifiers ("you are definitely well recovered") — a regression test fails under the old pattern and passes under the new one. The exact-set contradiction label test now includes the new real conflict case `unc_conflict_recovery` and asserts the mixed case is not a conflict.
+Reason: seventh and final Phase 2 dimension.
+Impact: Observed runs (fixture + PHIA, 26 cases), order temporal / grounding / answer / missing / contradiction / causal / uncertainty: reference 26/26, 26/26, 15/15, 7/7, 9/9, 4/4, 7/7; `input_order` 26/26, 25/26, 14/15, 7/7, 9/9, 4/4, 7/7; `no_as_of` 22/26, 24/26, 12/15, 6/7, 8/9, 4/4, 7/7; `no_window` 26/26, 18/26, 8/15, 3/7, 8/9, 4/4, 6/7; `silent_gaps` 26/26, 26/26, 15/15, 3/7, 9/9, 4/4, 7/7; `impute` 26/26, 24/26, 13/15, 3/7, 9/9, 4/4, 6/7; `ignore_self_report` 26/26, 20/26, 15/15, 7/7, 6/9, 4/4, 7/7; `dismiss_self_report` 26/26, 26/26, 15/15, 7/7, 6/9, 4/4, 6/7; `causal_overclaim` 26/26, 26/26, 15/15, 7/7, 9/9, 2/4, 7/7; `overconfident` 26/26, 26/26, 15/15, 7/7, 6/9, 4/4, 2/7; `false_abstention` 26/26, 26/26, 0/15, 3/7, 6/9, 4/4, 5/7. Earlier dimensions unchanged on earlier cases except contradiction v0.1.1 (no earlier case affected). 258 tests pass; without PHIA data 254 pass + 4 skipped. Mutation check: disabling negation/refusal handling in the certainty parser fails 13 uncertainty tests. Control-character scan (files and 32 compiled regexes): clean.
+Files affected: agent.py, scenarios.py, __main__.py, evaluation/{__init__,text,grounding,answer,contradiction,uncertainty (new)}.py, tests/{test_uncertainty (new),test_suite,test_contradiction}.py, README.md, PROJECT_CONTEXT.md.
 Scope impact: Minor
 
 ## 24. Rules for Future Changes

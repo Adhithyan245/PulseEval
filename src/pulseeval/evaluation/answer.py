@@ -12,9 +12,10 @@ from __future__ import annotations
 from pulseeval.agent import AgentTrace
 from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureType, build_result
 from pulseeval.evaluation.text import affirmed_number, asserts, numbers_with_unit, value_mentions
-from pulseeval.scenarios import AssessmentCase, Case, NumericCase, RelationshipCase, StateCase
+from pulseeval.scenarios import (AssessmentCase, Case, NumericCase, OpenQuestionCase,
+                                 RelationshipCase, StateCase)
 
-ANSWER_EVALUATOR_VERSION = "0.3.0"
+ANSWER_EVALUATOR_VERSION = "0.3.1"
 _EPS = 1e-9  # absorbs float noise at the tolerance boundary
 
 
@@ -87,8 +88,8 @@ def _relationship_specs(case: RelationshipCase, trace: AgentTrace) -> list[Check
 
 
 def evaluate_answer_correctness(case: Case, trace: AgentTrace) -> EvaluationResult | None:
-    if isinstance(case, AssessmentCase):
-        return None  # open assessment: no single correct value (ADR-009, ADR-010)
+    if isinstance(case, AssessmentCase | OpenQuestionCase):
+        return None  # no single correct value (ADR-009, ADR-010, ADR-012)
     if isinstance(case, RelationshipCase):
         specs = _relationship_specs(case, trace)
     elif isinstance(case, NumericCase):

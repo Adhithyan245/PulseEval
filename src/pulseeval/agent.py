@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from pulseeval.timeline import MemberTimeline, Record
 
-AGENT_VERSION = "0.5.0"
+AGENT_VERSION = "0.6.0"
 
 Ordering = Literal["chronological", "input_order"]
 
@@ -96,6 +96,10 @@ _REPORT_DIRECTION = {"exhausted": "poor", "tired": "poor", "drained": "poor",
 def _intent(question: str) -> tuple[str, str, int | None] | None:
     """(operation, record name, window days) for the few supported question shapes."""
     q = question.lower()
+    if "sick" in q or re.search(r"\bill\b", q):
+        return "scope", "illness", None
+    if "deep sleep" in q:
+        return "scope", "sleep_stages", None
     if "goal" in q:
         return "current", "training_goal", None
     if "recover" in q:
@@ -113,7 +117,8 @@ class HealthAgent:
     def __init__(self, ordering: Ordering = "chronological", respect_as_of: bool = True,
                  respect_window: bool = True, report_coverage: bool = True,
                  impute_missing: bool = False, ignore_self_report: bool = False,
-                 dismiss_self_report: bool = False, causal_overclaim: bool = False):
+                 dismiss_self_report: bool = False, causal_overclaim: bool = False,
+                 overconfident: bool = False, false_abstention: bool = False):
         self.ordering = ordering
         self.respect_as_of = respect_as_of
         self.respect_window = respect_window  # fault when False: aggregates all history
@@ -122,6 +127,31 @@ class HealthAgent:
         self.ignore_self_report = ignore_self_report  # fault: wearable data only
         self.dismiss_self_report = dismiss_self_report  # fault: resolves conflicts for the data
         self.causal_overclaim = causal_overclaim  # fault: states an association as causation
+        self.overconfident = overconfident  # fault: definitive where evidence is insufficient
+        self.false_abstention = false_abstention  # fault: refuses even when an answer is supported
+
+    def _out_of_scope(self, context: list[Record], as_of: datetime, topic: str,
+                      tools: list[ToolCall]) -> tuple[list[Record], str]:
+        """Questions the timeline cannot answer: abstain and say what is missing."""
+        recent = [r for r in context if as_of - timedelta(days=2) <= r.event_time <= as_of]
+        latest = {}
+        for r in sorted(recent, key=lambda r: r.event_time):
+            latest[r.name] = r
+        tools.append(ToolCall(name="check_scope", inputs={"topic": topic},
+                              outputs=[r.record_id for r in latest.values()]))
+        if topic == "illness":
+            if self.overconfident and "resting_hr" in latest and "hrv" in latest:
+                p, h = latest["resting_hr"], latest["hrv"]
+                return [p, h], (f"Your resting heart rate is {float(p.value):.0f} bpm and your HRV "
+                                f"is {float(h.value):.0f} ms today, so you are definitely getting "
+                                "sick.")
+            return [], ("Your heart rate and HRV data cannot establish whether you are getting "
+                        "sick, so I can't answer that from this data.")
+        if self.overconfident and "sleep_duration" in latest:
+            return [latest["sleep_duration"]], ("You definitely got about 90 minutes of deep "
+                                                "sleep last night.")
+        return [], ("I don't have sleep-stage data, so I can't tell how much deep sleep you got "
+                    "last night.")
 
     def _relate(self, context: list[Record], as_of: datetime, days: int,
                 tools: list[ToolCall]) -> tuple[list[Record], str]:
@@ -197,6 +227,10 @@ class HealthAgent:
                   f"{ {'good': 'good', 'poor': 'reduced', 'mixed': 'mixed'}[wearable]} recovery "
                   f"today (HRV {h:.0f} ms vs a 7-day average of {bh:.0f} ms; resting heart rate "
                   f"{p:.0f} bpm vs {bp:.0f} bpm).")
+        if wearable == "mixed":
+            answer += (" You are clearly well recovered today." if self.overconfident else
+                       " Because these signals point in different directions, it is unclear how "
+                       "well recovered you are today.")
 
         report = None
         if not self.ignore_self_report:
@@ -219,8 +253,12 @@ class HealthAgent:
                               f"shows you are actually {verdict}.")
         answer += f" You reported feeling {report.value} this morning."
         if conflict:
-            answer += (" These two signals conflict. Neither source alone gives a complete "
-                       "picture, so it is worth weighing how you feel alongside the data.")
+            if self.overconfident:
+                verdict = "well recovered" if wearable == "good" else "not well recovered"
+                answer += f" These two signals conflict, but you are definitely {verdict}."
+            else:
+                answer += (" These two signals conflict. Neither source alone gives a complete "
+                           "picture, so it is worth weighing how you feel alongside the data.")
         elif felt == wearable:
             answer += " Your own report is consistent with the data."
         return evidence, answer
@@ -252,6 +290,9 @@ class HealthAgent:
                 evidence = [record]
                 final_answer = (f"Your current training goal is {record.value} "
                                 f"(set {record.event_time:%Y-%m-%d}).")
+
+        elif intent and intent[0] == "scope":
+            evidence, final_answer = self._out_of_scope(context, as_of, intent[1], tools)
 
         elif intent and intent[0] == "relate":
             window = (as_of - timedelta(days=intent[2]), as_of)
@@ -290,6 +331,15 @@ class HealthAgent:
                                 else f" ({covered} of {days} days had data)")
                 final_answer = (f"Your average resting heart rate over the last {days} days "
                                 f"was {mean:.1f} {used[0].unit}{coverage}.")
+                if covered * 2 < days:  # fewer than half the days: weakly supported
+                    final_answer += (" This is definitely your true average for the week."
+                                     if self.overconfident else
+                                     " With data for so few days, treat this average as "
+                                     "uncertain.")
+
+        abstained = not evidence
+        if self.false_abstention and evidence:  # fault: evidence gathered, answer withheld
+            final_answer, abstained = "I can't determine that from the available data.", True
 
         return AgentTrace(
             agent_version=AGENT_VERSION,
@@ -299,7 +349,9 @@ class HealthAgent:
                           "impute_missing": self.impute_missing,
                           "ignore_self_report": self.ignore_self_report,
                           "dismiss_self_report": self.dismiss_self_report,
-                          "causal_overclaim": self.causal_overclaim},
+                          "causal_overclaim": self.causal_overclaim,
+                          "overconfident": self.overconfident,
+                          "false_abstention": self.false_abstention},
             query=question,
             member_id=timeline.member_id,
             as_of=as_of,
@@ -308,5 +360,5 @@ class HealthAgent:
             tools_called=tools,
             evidence_used=[r.record_id for r in evidence],
             final_answer=final_answer,
-            abstention=not evidence,
+            abstention=abstained,
         )

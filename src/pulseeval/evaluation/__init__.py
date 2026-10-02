@@ -13,11 +13,13 @@ from pulseeval.evaluation.grounding import evaluate_evidence_grounding
 from pulseeval.evaluation.missing_data import evaluate_missing_data
 from pulseeval.evaluation.schemas import EvaluationResult
 from pulseeval.evaluation.temporal import evaluate_temporal_consistency
+from pulseeval.evaluation.uncertainty import evaluate_uncertainty_abstention
 from pulseeval.scenarios import Case
 
 EVALUATORS = (evaluate_temporal_consistency, evaluate_evidence_grounding,
               evaluate_answer_correctness, evaluate_missing_data,
-              evaluate_contradiction_handling, evaluate_causal_restraint)
+              evaluate_contradiction_handling, evaluate_causal_restraint,
+              evaluate_uncertainty_abstention)
 
 
 def run_suite(agent: HealthAgent, cases: list[Case]) -> list[EvaluationResult]:

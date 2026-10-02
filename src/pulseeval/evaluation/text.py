@@ -215,7 +215,8 @@ _DISMISS = re.compile(
     r"(?:wrong|inaccurate|mistaken|off)\b|"
     r"\btrust (?:the data|your data|your wearable|how you feel) (?:over|instead|rather)\b")
 _VERDICT = re.compile(
-    r"\byou(?:'re| are)\s+(?:actually\s+|fully\s+|well\s+|not\s+|poorly\s+|really\s+)*"
+    r"\byou(?:'re| are)\s+(?:actually\s+|fully\s+|well\s+|not\s+|poorly\s+|really\s+|"
+    r"definitely\s+|clearly\s+|certainly\s+|obviously\s+|absolutely\s+)*"
     r"(?:recovered|rested|fatigued|run[- ]down|ready)\b|"
     r"\byour recovery is\s+(?:\w+\s+)?(?:good|poor|low|high|fine|great|bad)\b")
 # Evidential framing that turns a verdict into an attributed reading of one source.
@@ -369,4 +370,82 @@ def causal_claims(answer: str, exposure_terms: list[str],
             direction = _direction(words)
             if direction:
                 claims.stated_directions.append(direction)
+    return claims
+
+
+# --- certainty claims (uncertainty / abstention) ----------------------------------
+# Per clause, with quoted spans masked (as for causal claims):
+#   refusal     the answer declines or says the evidence is insufficient ("I can't determine",
+#               "the data do not establish", "I would not conclude", "I would need ...")
+#   limitation  a refusal, or a non-negated uncertainty word ("unclear", "uncertain",
+#               "so few", "conflict", "mixed"), or an epistemic marker ("whether", "cannot")
+#   hedged      may / might / could / would / suggests ...
+#   certainty   "definitely", "clearly", "this proves" ... in an affirmed, non-hypothetical
+#               clause without a limitation; or "no doubt" / "without doubt" (built-in negation)
+#   conclusion  a conclusion term in a clause with no limitation, hedge or hypothetical
+#               framing -- positive or negative ("you are (not) getting sick") is definitive
+
+_REFUSAL = re.compile(
+    r"\b(?:insufficient|not enough|too little|"
+    r"(?:can't|cannot|can not|unable to|not able to)\s+"
+    r"(?:determine|tell|answer|assess|say|establish|know|conclude)|"
+    r"(?:don't|do not|doesn't|does not)\s+have\s+(?:enough\s+)?(?:[\w-]+\s+){0,2}"
+    r"(?:data|information|records)|"
+    r"(?:do|does|did)\s+not\s+establish|(?:doesn't|don't|didn't)\s+establish|"
+    r"(?:would not|wouldn't)\s+conclude|(?:would|will)\s+need|would require|"
+    r"need more (?:data|information))\b")
+_LIMIT_PLAIN = re.compile(r"\b(?:uncertain|unclear|ambiguous|tentative|preliminary|limited data|"
+                          r"so few|too few|only \d+ of \d+|hard to say|difficult to say|"
+                          r"not sure|conflict\w*|different directions|mixed)\b")
+_CERTAIN = re.compile(r"\b(?:definitely|clearly|certainly|undoubtedly|conclusively|obviously|"
+                      r"absolutely|for sure|this proves|proves that|guaranteed|"
+                      r"confirm(?:s|ed)? that)\b")
+_CERTAIN_NEGATIVE = re.compile(r"\b(?:no doubt|without (?:a |any )?doubt|beyond (?:any )?doubt|"
+                               r"there is no question)\b")
+# Negating a certainty word expresses uncertainty ("not clearly", "not necessarily").
+_NEGATED_CERTAINTY = re.compile(r"\bnot\s+(?:clearly|definitely|necessarily|certainly|"
+                                r"conclusively|obviously)\b")
+
+
+class CertaintyClaims(BaseModel):
+    """How confidently an answer commits to a conclusion."""
+
+    refusals: list[str] = []
+    limitations: list[str] = []
+    hedged: bool = False
+    certainty_markers: list[str] = []
+    definitive_conclusions: list[str] = []
+
+
+def certainty_claims(answer: str, conclusion_terms: list[str]) -> CertaintyClaims:
+    claims = CertaintyClaims()
+    conclusion = _term_regex(conclusion_terms) if conclusion_terms else None
+    for clause in clauses(_QUOTED.sub(" (quoted) ", answer)):
+        text = clause.lower()
+        words = set(re.findall(r"[a-z']+", text))
+        negated = bool(words & _CAUSAL_NEGATORS) or any(w.endswith("n't") for w in words)
+        hedged = bool(words & _CAUSAL_HEDGES)
+        refusal = bool(_REFUSAL.search(text))
+        limitation = (refusal or bool(_UNCERTAIN_MARKER.search(text))
+                      or bool(_NEGATED_CERTAINTY.search(text))
+                      or (not negated and bool(_LIMIT_PLAIN.search(text))))
+        if refusal:
+            claims.refusals.append(clause)
+        if limitation:
+            claims.limitations.append(clause)
+        claims.hedged = claims.hedged or hedged
+        if limitation:
+            continue
+
+        def hypothetical_before(pos: int) -> bool:
+            return bool(_HYPOTHETICAL_MARKER.search(text[:pos]))
+
+        claims.certainty_markers += [m.group(0) for m in _CERTAIN_NEGATIVE.finditer(text)]
+        if not negated:
+            claims.certainty_markers += [m.group(0) for m in _CERTAIN.finditer(text)
+                                         if not hypothetical_before(m.start())]
+        if conclusion and not hedged:
+            match = conclusion.search(text)
+            if match and not hypothetical_before(match.start()):
+                claims.definitive_conclusions.append(clause)
     return claims

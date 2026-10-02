@@ -20,6 +20,8 @@ AGENTS = {
     "ignore_self_report": HealthAgent(ignore_self_report=True),  # fault: wearable data only
     "dismiss_self_report": HealthAgent(dismiss_self_report=True),  # fault: data overrides report
     "causal_overclaim": HealthAgent(causal_overclaim=True),  # fault: association stated as cause
+    "overconfident": HealthAgent(overconfident=True),  # fault: definitive despite thin evidence
+    "false_abstention": HealthAgent(false_abstention=True),  # fault: refuses supported answers
 }
 
 

@@ -14,12 +14,20 @@ Personal-health agents reason over wearable and contextual data that changes ove
   - "Less sleep caused your HRV to drop" fails, unless the case is labelled causal-supported by specific records, such as an assigned sleep protocol.
   - Negated, uncertain, hypothetical and quoted causal wording ("this does not mean that…", "we cannot tell whether…") is not treated as a claim.
   - PulseEval judges language against labelled evidence semantics. It does not perform causal inference.
+- **uncertainty / abstention** (cases labelled with how much certainty the evidence supports): does the agent's expressed certainty match?
+  - Where the evidence supports a direct answer, the agent must not refuse; cautious wording is fine.
+  - Where evidence is thin, ambiguous or conflicting, it must express that and avoid "definitely" / "clearly" framing.
+  - Where the evidence cannot establish the conclusion ("Am I getting sick?" from heart-rate data), it must abstain or say so.
+  - Strong words inside negated, hypothetical or quoted statements don't count ("I would not conclude that you are definitely getting sick").
+  - This is a behavioural check of the agent. It does not estimate statistical confidence, clinical risk or medical probability.
 
 A trace can fail one dimension and pass the others. For example:
 - An agent that averages over the wrong window fails grounding and answer correctness but passes temporal consistency.
 - An agent that reports the correct 13-day mean as a "14-day average" fails only missing-data handling.
 - An agent that cites both sources but says "you reported feeling exhausted, but your data shows you are actually well recovered" fails only contradiction handling.
 - An agent that uses the right records, window and group means but says "sleeping less caused your HRV to drop" about an observational pattern fails only causal restraint.
+- An agent that correctly reports a 2-of-7-day average with its coverage, then adds "this is definitely your true average for the week", fails only uncertainty/abstention.
+- Refusing a question the evidence fully supports also fails only uncertainty/abstention.
 
 > Research/engineering prototype. Not a medical device. It makes no diagnostic, treatment, or clinical claims.
 
@@ -30,7 +38,7 @@ Case (timeline + question + as_of + expectation + provenance)
   → HealthAgent.answer()       system under test
   → AgentTrace                 retrieved context, tool calls, evidence, answer, abstention
   → temporal_consistency | evidence_grounding | answer_correctness | missing_data
-    | contradiction_handling | causal_restraint
+    | contradiction_handling | causal_restraint | uncertainty_abstention
   → EvaluationResult           checks + typed failures, per case and applicable evaluator
 ```
 
@@ -46,6 +54,7 @@ Case (timeline + question + as_of + expectation + provenance)
 | `evaluation/missing_data.py` | Missing-data handling: stated coverage vs actual coverage of the requested window |
 | `evaluation/contradiction.py` | Contradiction handling: wearable signals vs self-report |
 | `evaluation/causal.py` | Causal restraint: causal language vs the case's labelled causal support |
+| `evaluation/uncertainty.py` | Uncertainty / abstention: expressed certainty vs the case's labelled evidence sufficiency |
 | `evaluation/text.py` | Deterministic answer-text analysis: clauses, negated/past/hedged/affirmed mentions, number+unit and coverage-claim extraction |
 
 ## Setup
@@ -64,7 +73,7 @@ python -m pulseeval --agent reference
 python -m pulseeval --agent no_window --json
 ```
 
-`input_order`, `no_as_of`, `no_window`, `silent_gaps`, `impute`, `ignore_self_report`, `dismiss_self_report` and `causal_overclaim` are fault-injected agent configs. They exist to show that each evaluator detects the behaviour it should.
+`input_order`, `no_as_of`, `no_window`, `silent_gaps`, `impute`, `ignore_self_report`, `dismiss_self_report`, `causal_overclaim`, `overconfident` and `false_abstention` are fault-injected agent configs. They exist to show that each evaluator detects the behaviour it should.
 
 To include PHIA-derived cases, place PHIA's `synthetic_wearable_users/summary_df_465.csv` in `data/raw/phia/` (it is not distributed with this repo) and run:
 
@@ -79,17 +88,19 @@ python -m pytest
 ## Example evaluation (actual output, truncated)
 
 ```text
-Agent: causal_overclaim (v0.5.0) | Scenarios: v0.6.0
-Cases evaluated: 19
-temporal_consistency (v0.3.0): 19/19 (100%)
-evidence_grounding (v0.3.0): 19/19 (100%)
-answer_correctness (v0.3.0): 13/13 (100%)
-missing_data (v0.1.1): 5/5 (100%)
-contradiction_handling (v0.1.0): 6/6 (100%)
-causal_restraint (v0.1.0): 2/4 (50%)
+Agent: overconfident (v0.6.0) | Scenarios: v0.7.0
+Cases evaluated: 26
+temporal_consistency (v0.3.0): 26/26 (100%)
+evidence_grounding (v0.4.0): 26/26 (100%)
+answer_correctness (v0.3.1): 15/15 (100%)
+missing_data (v0.1.1): 7/7 (100%)
+contradiction_handling (v0.1.1): 6/9 (67%)
+causal_restraint (v0.1.0): 4/4 (100%)
+uncertainty_abstention (v0.1.0): 2/7 (29%)
 
-[FAIL] relation_association_only  (temporal=PASS evidence=PASS answer=PASS causal=FAIL)
-    CAUSALITY_FAILURE [causal_restraint/no_unsupported_causal_claim] (high): Asserted causal claims: ['Sleeping less caused your HRV to drop']. ...
+[FAIL] unc_sparse_rhr_7d  (temporal=PASS evidence=PASS answer=PASS missing=PASS uncertainty=FAIL)
+    UNCERTAINTY_FAILURE [uncertainty_abstention/uncertainty_expressed] (medium): Label: uncertainty_required. ...
+    UNCERTAINTY_FAILURE [uncertainty_abstention/no_unjustified_certainty] (high): Label: uncertainty_required. ...
 ```
 
 Pass rates are over the cases each dimension applies to:
@@ -97,8 +108,7 @@ Pass rates are over the cases each dimension applies to:
 - Missing-data covers only windowed numeric questions.
 - Contradiction handling covers only assessments.
 - Causal restraint covers only relationship questions.
-
-On the protocol-supported relationship case, the same causal wording passes.
+- Uncertainty/abstention covers only cases labelled with a certainty level.
 
 ## Data and ground truth
 
@@ -110,6 +120,13 @@ On the protocol-supported relationship case, the same causal wording passes.
     - the same pattern, confounded by a co-varying stress report;
     - the same pattern, with sleep length **assigned** by a recorded protocol. This is the only case labelled causal-supported, and that label is a fixture assumption.
     - no pattern.
+  - Seven are labelled for uncertainty/abstention, reusing the fixtures above:
+    - two where a direct answer is supported;
+    - only 2 of 7 days of data;
+    - a question about sleep stages the data doesn't contain;
+    - mixed wearable signals;
+    - a wearable/self-report conflict;
+    - an out-of-scope "Am I getting sick?".
 - **PHIA:** two cases on PHIA synthetic user 465, the 7- and 14-day mean resting HR. The 14-day window has a missing day in the source data. Expected values were **recomputed by PulseEval** from the published CSV, and every case records its provenance.
   - PHIA's own objective-query labels are *not* used as ground truth. They could not be reproduced from the published CSVs; for example, user 465's 7-day mean resting HR recomputes to 61.63, while PHIA's label is 61.18. Details are in `PROJECT_CONTEXT.md` §8.
   - PHIA is CC BY-NC 4.0 (Merrill et al., arXiv:2406.06464).
@@ -118,9 +135,10 @@ On the protocol-supported relationship case, the same causal wording passes.
 ## Limitations
 
 - The agent is rule-based, not an LLM. It validates the evaluation pipeline and does not measure real agent behaviour.
-- There are only 19 cases, and the self-reports and relationships are synthetic. Results say nothing about real agents.
+- There are only 26 cases, and the self-reports, relationships and certainty labels are synthetic. Results say nothing about real agents.
 - Answer analysis uses lexical English heuristics. It misses paraphrases and cross-sentence negation, and fails answers it cannot parse rather than passing them.
 - Missing-data handling assumes one expected observation per day, and its coverage parsing is lexical.
 - Contradiction handling detects conflict, dismissal and verdict wording lexically. Its "good / poor recovery" labels are a fixture convention, not a physiological standard.
 - Causal restraint judges wording against case labels; it is not causal inference. Its parsing is clause-based and lexical, and a causal claim must name both variables in one clause to be detected.
-- Not yet implemented: uncertainty/abstention, memory.
+- Uncertainty/abstention relies on hand labels of evidence sufficiency and lexical parsing. It is not a confidence or risk estimate.
+- Not yet implemented: memory evaluation (Phase 3).

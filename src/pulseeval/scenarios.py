@@ -13,7 +13,7 @@ from pydantic import BaseModel, model_validator
 
 from pulseeval.timeline import MemberTimeline, Record
 
-SCENARIOS_VERSION = "0.6.0"
+SCENARIOS_VERSION = "0.7.0"
 
 
 class _CaseBase(BaseModel):
@@ -24,6 +24,10 @@ class _CaseBase(BaseModel):
     as_of: datetime
     target_name: str  # record name the question is about
     provenance: str  # where the expected values come from
+    # ADR-012: how much certainty the evidence supports (None = not labelled, not evaluated)
+    certainty: Literal["direct_answer_supported", "uncertainty_required", "abstention_required",
+                       "conflict_requires_qualification"] | None = None
+    conclusion_terms: list[str] = []  # wording of the conclusion the question asks about
 
 
 class StateCase(_CaseBase):
@@ -61,13 +65,13 @@ class AssessmentCase(_CaseBase):
     window_start: datetime  # earliest valid evidence (baseline period)
     wearable_record_ids: list[str]  # today's wearable signals
     self_report_record_ids: list[str]  # knowable, current self-reports (may be empty)
-    wearable_indicates: Direction
+    wearable_indicates: Direction | Literal["mixed"]  # mixed: signals disagree (ADR-012)
     self_report_indicates: Direction | None  # None: no knowable current self-report
     relevant_names: list[str]  # record names that are legitimate evidence
 
     @property
     def conflict(self) -> bool:
-        return (self.self_report_indicates is not None
+        return (self.self_report_indicates is not None and self.wearable_indicates != "mixed"
                 and self.self_report_indicates != self.wearable_indicates)
 
 
@@ -108,7 +112,18 @@ class RelationshipCase(_CaseBase):
         return [self.exposure_name, self.outcome_name, *self.confounder_names, *sorted(basis)]
 
 
-Case = StateCase | NumericCase | AssessmentCase | RelationshipCase
+class OpenQuestionCase(_CaseBase):
+    """A question no other kind represents, e.g. one the evidence cannot answer (ADR-012).
+
+    Only temporal consistency, evidence grounding and uncertainty/abstention apply.
+    """
+
+    kind: Literal["open"] = "open"
+    window_start: datetime
+    relevant_names: list[str]  # record names that are legitimate evidence if cited
+
+
+Case = StateCase | NumericCase | AssessmentCase | RelationshipCase | OpenQuestionCase
 
 
 def _r(record_id, kind, name, value, event, recorded=None, unit=None) -> Record:
@@ -222,6 +237,9 @@ _TODAY = {
              _r("p0415", "physiological", "resting_hr", 51.0, "2026-04-15T06:00", unit="bpm")],
     "poor": [_r("h0415", "physiological", "hrv", 42.0, "2026-04-15T06:00", unit="ms"),
              _r("p0415", "physiological", "resting_hr", 61.0, "2026-04-15T06:00", unit="bpm")],
+    # "mixed" = HRV above baseline but resting HR also above baseline (ADR-012)
+    "mixed": [_r("h0415", "physiological", "hrv", 62.0, "2026-04-15T06:00", unit="ms"),
+              _r("p0415", "physiological", "resting_hr", 59.0, "2026-04-15T06:00", unit="bpm")],
 }
 
 
@@ -230,7 +248,7 @@ def _report(value: str, event: str = "2026-04-15T07:30", recorded: str | None = 
     return _r(record_id, "subjective", "energy_report", value, event, recorded=recorded)
 
 
-def _recovery_case(case_id: str, description: str, wearable: Direction, extra: list[Record],
+def _recovery_case(case_id: str, description: str, wearable: str, extra: list[Record],
                    report_ids: list[str], report_indicates: Direction | None) -> AssessmentCase:
     return AssessmentCase(
         case_id=case_id, description=description,
@@ -339,4 +357,70 @@ CASES += [
     _relation_case("relation_no_pattern",
                    "Sleep varies but HRV stays flat (54.8 vs 55.2 ms): no association.",
                    _HRV_FLAT, [], "none", (54.8, 55.2), _OBSERVATIONAL),
+]
+
+# --- uncertainty / abstention cases (ADR-012) ----------------------------------------
+# Each reuses an existing fixture and adds a hand label for how much certainty the evidence
+# supports. The labels describe evidence sufficiency in the fixture, not clinical confidence.
+
+_CERTAINTY_NOTE = " Certainty label is a fixture judgement of evidence sufficiency (ADR-012)."
+
+
+def _labelled(case: Case, case_id: str, description: str, certainty: str,
+              conclusion_terms: list[str] | None = None) -> Case:
+    return case.model_copy(update={
+        "case_id": case_id, "description": description, "certainty": certainty,
+        "conclusion_terms": conclusion_terms or [], "provenance": case.provenance + _CERTAINTY_NOTE,
+    })
+
+
+def _open_case(case_id: str, description: str, question: str, timeline: MemberTimeline,
+               as_of: datetime, relevant_names: list[str],
+               conclusion_terms: list[str]) -> OpenQuestionCase:
+    return OpenQuestionCase(
+        case_id=case_id, description=description, timeline=timeline, question=question,
+        as_of=as_of, target_name="open_question",
+        provenance=FIXTURE_PROVENANCE + _CERTAINTY_NOTE, window_start=as_of - timedelta(days=8),
+        relevant_names=relevant_names, certainty="abstention_required",
+        conclusion_terms=conclusion_terms,
+    )
+
+
+_SPARSE = [r for r in _RHR_WEEK if r.record_id in ("r0326", "r0330")]  # 54 + 55 -> 54.5 bpm
+
+CASES += [
+    # 1. direct answer supported
+    _labelled(_rhr_case("x", "", _RHR_WEEK, expected=54.857, ids=_RHR_ALL_IDS),
+              "unc_direct_rhr_7d", "Complete 7-day window: a direct numeric answer is supported.",
+              "direct_answer_supported"),
+    _labelled(_recovery_case("x", "", "good", [_report("rested")], ["e0415"], "good"),
+              "unc_direct_recovery_agree",
+              "Wearable and self-report agree: a direct recovery assessment is supported.",
+              "direct_answer_supported", ["recovered"]),
+    # 2. missing critical evidence: 2 of 7 days -> an average exists but is weakly supported
+    _labelled(_rhr_case("x", "", _SPARSE, expected=54.5, ids=["r0326", "r0330"]),
+              "unc_sparse_rhr_7d",
+              "Only 2 of 7 days have readings: an answer needs explicit uncertainty.",
+              "uncertainty_required"),
+    _open_case("unc_missing_sleep_stages",
+               "Sleep-stage data does not exist in the timeline (only total sleep duration).",
+               "How much deep sleep did I get last night?",
+               MemberTimeline(member_id="M003", records=_paired_days(_HRV_PATTERN)[0]),
+               RELATION_AS_OF, ["sleep_duration"], ["deep sleep"]),
+    # 3. ambiguous evidence: HRV up and resting HR up -> no single reading
+    _labelled(_recovery_case("x", "", "mixed", [], [], None),
+              "unc_ambiguous_recovery",
+              "HRV and resting HR are both above baseline: the signals point different ways.",
+              "uncertainty_required", ["recovered"]),
+    # 4. conflicting evidence
+    _labelled(_recovery_case("x", "", "good", [_report("exhausted")], ["e0415"], "poor"),
+              "unc_conflict_recovery",
+              "Wearable signals look good; the member reports feeling exhausted.",
+              "conflict_requires_qualification", ["recovered"]),
+    # 5. out of supported scope: heart-rate data cannot establish illness
+    _open_case("unc_out_of_scope_illness",
+               "Resting HR is up and HRV down, but nothing in the timeline can establish illness.",
+               "Am I getting sick?",
+               MemberTimeline(member_id="M002", records=_BASELINE + _TODAY["poor"]),
+               RECOVERY_AS_OF, ["hrv", "resting_hr"], ["sick", "ill", "illness"]),
 ]
