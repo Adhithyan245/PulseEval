@@ -87,3 +87,10 @@ def numbers_with_unit(answer: str, unit: str) -> list[tuple[float, Polarity]]:
     pattern = re.compile(rf"(-?\d+(?:\.\d+)?)\s*{re.escape(unit)}\b", re.IGNORECASE)
     return [(float(m.group(1)), _polarity(c))
             for c in clauses(answer) for m in pattern.finditer(c)]
+
+
+def affirmed_number(answer: str, unit: str) -> tuple[float | None, list[float]]:
+    """The single distinct affirmed number with `unit` (None if zero or several), and all of them."""
+    affirmed = sorted({v for v, polarity in numbers_with_unit(answer, unit)
+                       if polarity == "affirmed"})
+    return (affirmed[0] if len(affirmed) == 1 else None), affirmed

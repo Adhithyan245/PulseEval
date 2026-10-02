@@ -7,6 +7,7 @@ import json
 
 from pulseeval.agent import AGENT_VERSION, HealthAgent
 from pulseeval.evaluation import run_suite
+from pulseeval.phia import phia_cases
 from pulseeval.scenarios import CASES, SCENARIOS_VERSION
 
 AGENTS = {
@@ -21,9 +22,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="pulseeval")
     parser.add_argument("--agent", choices=AGENTS, default="reference")
     parser.add_argument("--json", action="store_true", help="print full results as JSON")
+    parser.add_argument("--phia", metavar="DIR",
+                        help="also run PHIA-derived cases from a local PHIA data directory")
     args = parser.parse_args()
 
-    results = run_suite(AGENTS[args.agent], CASES)
+    cases = CASES + (phia_cases(args.phia) if args.phia else [])
+    results = run_suite(AGENTS[args.agent], cases)
 
     if args.json:
         print(json.dumps([r.model_dump(mode="json") for r in results], indent=2))
@@ -31,18 +35,23 @@ def main() -> None:
 
     print("PulseEval - Longitudinal Health Agent Evaluation")
     print(f"Agent: {args.agent} (v{AGENT_VERSION}) | Scenarios: v{SCENARIOS_VERSION}")
-    print(f"Cases evaluated: {len(results)}")
+    print(f"Cases evaluated: {len(cases)}")
     for evaluator in dict.fromkeys(r.evaluator for r in results):
         group = [r for r in results if r.evaluator == evaluator]
         passed = sum(r.passed for r in group)
         print(f"{evaluator} (v{group[0].evaluator_version}): "
               f"{passed}/{len(group)} ({passed / len(group):.0%})")
     print()
-    for r in results:
-        print(f"[{'PASS' if r.passed else 'FAIL'}] {r.case_id}")
-        for f in r.failures:
-            print(f"    {f.failure_type.value} [{f.aspect}/{f.check}] ({f.severity}): "
-                  f"{f.actual_behavior}")
+    for case in cases:
+        case_results = [r for r in results if r.case_id == case.case_id]
+        verdicts = " ".join(f"{r.evaluator.split('_')[0]}={'PASS' if r.passed else 'FAIL'}"
+                            for r in case_results)
+        print(f"[{'PASS' if all(r.passed for r in case_results) else 'FAIL'}] "
+              f"{case.case_id}  ({verdicts})")
+        for r in case_results:
+            for f in r.failures:
+                print(f"    {f.failure_type.value} [{r.evaluator}/{f.check}] ({f.severity}): "
+                      f"{f.actual_behavior}")
 
 
 if __name__ == "__main__":

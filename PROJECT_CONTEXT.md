@@ -7,19 +7,19 @@ Phase: 2 — Core Evaluation
 Status: IN PROGRESS (stopped for review)
 
 Last completed:
-Hardened temporal evaluator (clause-polarity answer check), numerical-correctness evaluator, MMASH/PHIA verification; 40 tests passing.
+PHIA mapping investigation (persona↔user supported; labels not reproducible → not ground truth); evaluators split into temporal / evidence grounding / answer; evidence-grounding evaluator; minimal PHIA adapter with 2 recomputed cases. 56 tests pass (53 without local PHIA data).
 
 Currently working on:
 Nothing — awaiting review.
 
 Next task:
-Proposed (needs approval; moves part of Phase 5 earlier): resolve PHIA answer→user mapping, then a minimal PHIA `summary_df` → `MemberTimeline` adapter feeding numeric cases. Alternative within current plan: evidence-grounding evaluator.
+Missing-data handling evaluator (Phase 2), using PHIA user 465's natural gaps plus fixture cases.
 
 Blocked by:
-None. Open question: PHIA objective answers have no user column — which synthetic user each answer refers to is unverified.
+None.
 
 Last architecture change:
-ADR-004 (evaluation subpackage), ADR-005 (clause-polarity answer check), ADR-006 (typed case union) — Implemented.
+ADR-007 (PHIA labels not ground truth; minimal adapter), ADR-008 (one evaluator per dimension; evidence grounding) — Implemented.
 
 Last context update:
 2026-10-02
@@ -50,27 +50,31 @@ Not a health chatbot, diagnosis/treatment/clinical-decision system, generic RAG 
 | Timeline schema (`timeline.py`) | Implemented, tested |
 | SUT agent v0.2.0 (`agent.py`): intents = current training goal, N-day mean resting HR | Implemented, tested |
 | Agent trace schema | Implemented |
-| Temporal-consistency evaluator v0.2.0 | Implemented, tested (incl. adversarial answer texts) |
-| Numerical-correctness evaluator v0.1.0 | Implemented, tested |
-| Scenarios v0.2.0: 4 state + 2 numeric fixture cases | Implemented |
-| CLI report (`python -m pulseeval`) | Implemented |
-| PHIA / MMASH | Verified (§8); PHIA sample inspected locally; no loader |
-| Other evaluators, memory lifecycle, LLM agent, UI | Not started |
+| Temporal-consistency evaluator v0.3.0 (knowability only) | Implemented, tested |
+| Evidence-grounding evaluator v0.1.0 | Implemented, tested |
+| Answer-correctness evaluator v0.2.0 (state + numeric) | Implemented, tested |
+| Scenarios v0.3.0: 4 state + 2 numeric fixture cases, each with `provenance` | Implemented |
+| PHIA adapter (`phia.py`): 1 user, 2 numeric cases, PulseEval-recomputed values | Implemented, tested (skips without local data) |
+| CLI report (`python -m pulseeval [--phia DIR]`) | Implemented |
+| MMASH | Verified (§8); not downloaded |
+| Contradiction/causal/missing-data/uncertainty evaluators, memory lifecycle, LLM agent, UI | Not started |
 
 ## 6. Current Architecture
 
 ```text
-Case = StateCase | NumericCase (timeline + question + as_of + hand-labelled expectation)
+Case = StateCase | NumericCase   (fixture: scenarios.py | PHIA-derived: phia.py)
+  timeline + question + as_of + target_name + expectation + provenance
   → HealthAgent.answer()          # SUT; tools: retrieve_context, latest_value, mean_value
   → AgentTrace                    # structured; every tool call recorded
-  → run_suite dispatch by kind:
-      StateCase   → evaluate_temporal_consistency()
-      NumericCase → evaluate_numerical_correctness()
-  → EvaluationResult (checks tagged by aspect: temporal / evidence / answer; typed Failures)
+  → run_suite: every case × every evaluator
+      temporal_consistency   — was anything retrieved/cited unknowable at as_of?
+      evidence_grounding     — is the cited evidence the right evidence for the claim?
+      answer_correctness     — does the final text assert the right thing?
+  → EvaluationResult per (case, evaluator): checks + typed Failures
   → CLI text report / JSON
 ```
 
-Evaluators receive the case (ground truth) and the trace. They never call agent code to compute expected values. Answer-text analysis is shared in `evaluation/text.py`.
+Evaluators receive the case (expectations) and the trace; they never call agent code to compute expected values. A trace can fail any dimension independently (see §12 separation examples). Answer-text analysis is shared in `evaluation/text.py`.
 
 ## 7. Repository Structure
 
@@ -78,135 +82,156 @@ Evaluators receive the case (ground truth) and the trace. They never call agent 
 PROJECT_CONTEXT.md   README.md   pyproject.toml   .gitignore
 src/pulseeval/
   __init__.py
-  __main__.py          # CLI: runs suite, prints report / JSON
+  __main__.py          # CLI: runs suite, prints report / JSON; --phia DIR adds PHIA cases
   timeline.py          # Record, MemberTimeline (as-of semantics)
   agent.py             # SUT: tools, HealthAgent, ToolCall, AgentTrace
   scenarios.py         # StateCase, NumericCase, fixture cases
+  phia.py              # minimal PHIA adapter: summary CSV -> MemberTimeline + 2 NumericCases
   evaluation/
-    __init__.py        # run_suite (dispatch by case kind)
+    __init__.py        # EVALUATORS, run_suite
     schemas.py         # FailureType, Check, Failure, EvaluationResult, CheckSpec, build_result
     text.py            # deterministic answer-text analysis (clauses, polarity, numbers+unit)
-    temporal.py        # temporal-consistency evaluator, unknowable_records helper
-    numerical.py       # numerical-correctness evaluator
+    temporal.py        # temporal consistency (knowability)
+    grounding.py       # evidence grounding
+    answer.py          # answer correctness (state + numeric)
 tests/
-  test_timeline.py   test_temporal.py   test_numerical.py
-data/raw/            # git-ignored; local copies only (currently: data/raw/phia/ sample)
+  test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_suite.py  test_phia.py
+data/raw/            # git-ignored; local copies only (data/raw/phia/: 14 files, ~700 KB)
 ```
 
 ## 8. Data Sources
 
-Verified 2026-10-02 by reading official pages (and, for PHIA, inspecting a 4-file local sample). Not legal advice; re-check before redistribution.
+Verified 2026-10-02 by reading official pages and the PHIA repository's code/data. Not legal advice; re-check before redistribution.
 
 | Dataset | Status |
 |---|---|
 | Hand-written fixture (`scenarios.py`) | **In use.** Synthetic member M001; values illustrative. |
-| PHIA | Verified; small sample in `data/raw/phia/` (git-ignored). No loader. Priority 1. |
+| PHIA | **In use (limited).** Local sample in `data/raw/phia/` (git-ignored). PHIA labels are *not* used as ground truth (ADR-007). |
 | MMASH | Verified from PhysioNet page; **not downloaded**. Priority 2. |
 
 ### PHIA — Personal Health Insights Agent
 
-- **Source:** https://github.com/yahskapar/personal-health-insights-agent (a co-author's personal account; web research found the paper's availability statement points here). Paper: Merrill et al., "Transforming wearable data into personal health insights using large language model agents", arXiv:2406.06464 (verified). Nature Communications version (DOI 10.1038/s41467-025-67922-y) seen only via a search snippet — details **unverified**.
-- **License:** repo `LICENSE` file is "Attribution-NonCommercial 4.0 International" (CC BY-NC 4.0) — read directly. GitHub's license detector reports `NOASSERTION`. Redistribution with attribution, **non-commercial only**. No separate data terms found.
-- **Access:** public GitHub, no login; individual files fetchable via raw.githubusercontent.com. Repo ≈ 29 MB (GitHub API), incl. an 11.9 MB `teaser.gif`.
-- **Structure (inspected locally):**
-  - `Objective Query - PHIA.xlsx` (90 KB): one sheet, columns `Question`, `Answer`; 4000 questions; 3943 numeric answers (400 exactly 0.0), 57 non-numeric (activity names, e.g. "Run"); 855 duplicate question strings. **No user-id column** → which user each answer refers to is unverified.
-  - `Open-Ended Query - PHIA.xlsx` (11 KB): 172 questions, no ground truth.
-  - `synthetic_wearable_users/` (117 files, 295 KB): `summary_df_<id>.csv` (daily: resting_heart_rate, heart_rate_variability, active zone minutes, steps, sleep stage minutes/percents, bed/wake time, stress_management_score, demographics) and `exercise_df_<id>.csv` (per session: activityName, start/end, duration, averageHeartRate, distance, calories, …).
-  - User 465 sample: 29 daily rows spanning 2023-10-01 → 2023-10-31 (**2 missing days**), 16 empty cells; 11 exercise sessions.
-  - Also `real_wearable_users/` (4 de-identified users) and `data/` (human-eval / labeling sheets, up to 4.3 MB) — not downloaded.
-- **Contribution to PulseEval:** numeric objective questions for the numerical evaluator; daily summaries map naturally onto `Record` (kind physiological/sleep/activity, event_time = date); natural gaps support missing-data cases.
-- **Limitations:** ~1 month of daily aggregates per user; no intraday data; no goals/subjective reports/context events (stale-memory and contradiction scenarios still need synthetic overlays); answer→user mapping unknown; synthetic users are model-generated; non-commercial license.
+- **Source:** https://github.com/yahskapar/personal-health-insights-agent (a co-author's account; README calls it "the official repository for the paper"). Paper: Merrill et al., arXiv:2406.06464 (verified). Nature Communications version (DOI 10.1038/s41467-025-67922-y) seen only via a search snippet — details **unverified**. README notes a successor, Personal Health Agent (PHA): https://github.com/Google-Health/consumer-health-research/tree/main/personal_health_agent, arXiv:2508.20148 — not inspected.
+- **License:** CC BY-NC 4.0 (repo `LICENSE` file and README). Attribution, **non-commercial only**. GitHub's detector reports `NOASSERTION`.
+- **Access:** public GitHub, no login; individual files fetchable via raw.githubusercontent.com.
+- **Local sample (`data/raw/phia/`, git-ignored, downloaded 2026-10-02):** `objective_queries.xlsx`, `open_ended_queries.xlsx`, `{health_behavior,sedentary_sleeper,inactive_insomniacs,active_achiver}_final_v2.csv`, `summary_df_{465,333,171,41}.csv`, `exercise_df_{465,333,171,41}.csv`.
+
+**Question → user → data mapping investigation (2026-10-02):**
+1. `Objective Query - PHIA.xlsx`: columns `Question`, `Answer` only; 4000 rows; no user column. It is *not* an ordered or exact (question,label) concatenation of the four persona files (only 2204/4000 positional label matches) — its provenance relative to them is unresolved.
+2. `data/auto_eval/<persona>_final_v2.csv` (4 files × 1000 rows): columns `question`, `label`, `code` (the pandas expression that generated the label). `figs/3a.ipynb` loads each as the ground-truth file (`gt_path`) for that persona.
+3. No PHIA code maps persona → user id. README: "Subject 465, 333, 171, and 41 are used in evaluation". Filenames in `data/human_label_experiments/` pair ids with persona names (`465_HealthBehaviorChampions`, `333_SedentarySleepers`, `171_InactiveInsomniacs`, `41_ActiveAchieversLowZzzs`).
+4. **Empirical check (PHIA code strings never executed):** for the narrow template `daily_metrics.during('last N days')[col].{mean,sum,max,min,median,std}()`, labels were recomputed independently from each candidate user's `summary_df` using PHIA's own window rule (`data_utils.py`: reference = last date in data; window = N days ending there, inclusive). Matches (|Δ| ≤ 0.01 at 2 dp):
+
+   | persona file | 465 | 333 | 171 | 41 |
+   |---|---|---|---|---|
+   | health_behavior | **113/278** | 0 | 0 | 0 |
+   | sedentary_sleeper | 1 | **121/335** | 0 | 0 |
+   | inactive_insomniacs | 0 | 0 | **221/364** | 3 |
+   | active_achiver | 0 | 0 | 2 | **121/350** |
+
+   → persona ↔ user mapping is **supported** (unique diagonal, agrees with filenames).
+5. **But labels are not reproducible**: even for the matched user, most mean/sum/median/std labels disagree; min/max mostly agree. Alternative window rules (PHIA `last_days_alt`; last N rows) do not fix it (best 66%). Example: user 465, 7-day mean resting HR, all 7 readings present → 61.634 recomputed vs **61.18** PHIA label. Most likely the labels were computed on data that differs from the published CSVs — **unverified**; cause unknown.
+
+**Decision (ADR-007):** PHIA labels are a reference resource, **not ground truth** in PulseEval. PHIA timelines are used with expected values recomputed by PulseEval, provenance recorded on each case.
+
+- **Structure:** `synthetic_wearable_users/` (117 files): `summary_df_<id>.csv` daily (resting_heart_rate, heart_rate_variability, AZM, steps, sleep stage minutes/percents, bed/wake time, stress_management_score, demographics) and `exercise_df_<id>.csv` per session. Evaluation users span 2023-10-01/02 → 2023-10-31 with gaps: 465 = 29 days (missing 10-12, 10-21), 333 = 28, 171 = 21, 41 = 28. `data/auto_eval/*shots*.csv` are 13–40 MB model outputs (not downloaded).
+- **Contribution to PulseEval:** realistic daily timelines with natural gaps (missing-data cases); question templates; persona variety.
+- **Limitations:** ~1 month daily aggregates; no ingestion timestamps (adapter assumes recorded_at = event_time); no goals/subjective/context events; synthetic users model-generated; non-commercial license; published labels not reproducible.
 
 ### MMASH — Multilevel Monitoring of Activity and Sleep in Healthy people
 
 - **Source:** https://physionet.org/content/mmash/1.0.0/ (v1.0.0, 2020-06-19), DOI 10.13026/cerq-fc86. Citation: Rossi A, Da Pozzo E, Menicagli D, Tremolanti C, Priami C, Sirbu A, Clifton D, Martini C, Morelli D. (2020).
 - **License/access:** Open Data Commons ODbL v1.0; PhysioNet Open Access (no login/DUA). ODbL permits redistribution with attribution and share-alike for derived databases (general ODbL terms).
-- **Download:** automatic possible — 22.7 MB ZIP, or `wget -r -N -c -np https://physionet.org/files/mmash/1.0.0/`. Not downloaded yet.
-- **Structure:** 22 healthy young adult males; ~24 h per subject (spanning 2 calendar days). Per-user files: `user_info.csv`, `RR.csv` (ibi_s, day, time), `Actigraph.csv` (axes, steps, HR, inclinometer), `sleep.csv` (onset, efficiency, TST, WASO, …), `Activity.csv` (coded activities incl. caffeine/alcohol/screen), `questionnaire.csv` (MEQ, STAI, PSQI, PANAS, daily stress), `saliva.csv` (cortisol/melatonin; missing for user_21).
-- **Contribution to PulseEval:** high-resolution physiology + subjective questionnaires + activity/context log → contradiction (wearable vs self-report) and missing-context scenarios; intraday temporal ordering.
-- **Limitations:** ~1 day per subject — **not longitudinal across days**; small, homogeneous cohort.
+- **Download:** automatic possible — 22.7 MB ZIP, or `wget -r -N -c -np https://physionet.org/files/mmash/1.0.0/`. Not downloaded.
+- **Structure:** 22 healthy young adult males; ~24 h per subject. Per-user `user_info.csv`, `RR.csv`, `Actigraph.csv`, `sleep.csv`, `Activity.csv`, `questionnaire.csv`, `saliva.csv`.
+- **Contribution:** wearable vs self-report contradiction and missing-context scenarios; intraday ordering.
+- **Limitations:** ~1 day per subject — not longitudinal across days; small, homogeneous cohort.
 
 ## 9. Data Schemas
 
 `Record`: `record_id, kind, name, value, unit?, event_time, recorded_at, source, confidence?`
 - `kind` ∈ physiological, activity, sleep, subjective, context, goal, memory
 - `event_time`: when the fact happened / became true. `recorded_at`: when it entered the system.
-- **As-of rule:** a record is knowable at `as_of` iff `recorded_at <= as_of`. "Current" value of `name` = knowable record with the latest `event_time` (ties: `recorded_at`, then `record_id`).
-- `known_as_of()` filters but does **not** sort; ordering is the agent's job and is what temporal evaluation tests.
-- Updates are new records (no in-place mutation). Explicit `supersedes`/expiry deferred to Phase 3.
+- **As-of rule:** knowable at `as_of` iff `recorded_at <= as_of`. "Current" value of `name` = knowable record with the latest `event_time` (ties: `recorded_at`, then `record_id`).
+- `known_as_of()` filters but does **not** sort.
+- Updates are new records. `supersedes`/expiry deferred to Phase 3.
 
-`MemberTimeline`: `member_id, records` (input order is *not* assumed meaningful).
+`MemberTimeline`: `member_id, records` (input order not meaningful).
 
-`StateCase`: `case_id, description, timeline, question, as_of, target_name, expected_record_id, expected_value`.
-`NumericCase`: same base + `expected_value: float, unit, tolerance (absolute), expected_record_ids`.
+Case base: `case_id, description, timeline, question, as_of, target_name, provenance`.
+`StateCase`: + `expected_record_id, expected_value: str`. Valid evidence window: event_time ≤ as_of.
+`NumericCase`: + `window_start, expected_value: float, unit, tolerance (absolute), expected_record_ids`. Aggregate is the mean over [window_start, as_of].
 
 `AgentTrace`: `agent_version, agent_config, query, member_id, as_of, time_window, retrieved_context, tools_called[ToolCall{name, inputs, outputs}], memories_used, evidence_used, final_answer, uncertainty, abstention`.
 
-`Check`: `name, aspect, passed, explanation`. `EvaluationResult`: `case_id, evaluator, evaluator_version, passed, checks, failures`.
-`Failure`: `failure_type, check, aspect, severity, query, expected_behavior, actual_behavior, evidence, trace, explanation`.
+`Check`: `name, passed, explanation`. `EvaluationResult`: `case_id, evaluator, evaluator_version, passed, checks, failures`.
+`Failure`: `failure_type, check, severity, query, expected_behavior, actual_behavior, evidence, trace, explanation`.
 
 ## 10. System Under Test
 
 `HealthAgent(ordering, respect_as_of, respect_window)` v0.2.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
 - Reference config: chronological, respects as_of, respects window.
 - Fault-injected configs: `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history).
-- Intents: "current training goal"; "average resting heart rate over the last N days". Anything else → explicit abstention.
+- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]). Anything else → explicit abstention.
 
 ## 11. Evaluation Engine
 
-Deterministic-first. No LLM judge yet. Evaluators are versioned (`*_EVALUATOR_VERSION`). Every check is tagged with an **aspect** so failures separate:
-- **temporal** — was anything used that was unknowable at as_of?
-- **evidence** — did the agent cite the right records?
-- **answer** — does the final text assert the right thing?
+Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Three independent dimensions (ADR-008), each its own evaluator, all run on every case.
 
 ## 12. Evaluation Dimensions
 
 | Dimension | Status |
 |---|---|
-| Temporal consistency | **Implemented** v0.2.0 |
-| Numerical/factual correctness | **Implemented** v0.1.0 |
-| Evidence grounding, contradiction, missing-data, causal restraint, uncertainty/abstention | Planned (Phase 2) |
+| Temporal consistency | **Implemented** v0.3.0 |
+| Evidence grounding | **Implemented** v0.1.0 |
+| Answer correctness (numerical + current-state) | **Implemented** v0.2.0 |
+| Contradiction handling (wearable vs self-report), missing-data, causal restraint, uncertainty/abstention | Planned (Phase 2) |
 | Memory validity | Planned (Phase 3) |
 | Personalization, tool-call correctness | Planned (Phase 2–4) |
 
-**Temporal consistency (StateCase)** — all failures `TEMPORAL_FAILURE`:
-1. `no_future_evidence` [temporal] — no retrieved/cited record has `recorded_at` or `event_time` after as_of.
-2. `evidence_includes_current_record` [evidence] — the labelled current record is in `evidence_used`.
-3. `answer_asserts_current_value` [answer] — the current value is *affirmed* in some clause.
-4. `answer_does_not_assert_other_value` [answer] — no other value of the same field (from the timeline) is affirmed.
+**temporal_consistency** — `TEMPORAL_FAILURE`:
+- `no_unknowable_records` — nothing retrieved or cited has `recorded_at` or `event_time` after as_of.
 
-**Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); a new clause starts at contrast cues (but, however, although, instead of, rather than, …) and at *contrastive* negation only (`, not` / `and not` / `, no longer`); otherwise negation scopes over its whole clause. "switched/changed … from X to Y" → X is past. Mention = the value's content tokens appear contiguously and in order (light plural stemming). Polarity priority: negated > past > hedged > affirmed. Hedged mentions do not count as assertions.
+**evidence_grounding** — `GROUNDING_FAILURE`:
+- `cited_records_exist` — no fabricated ids.
+- `cites_required_records` — labelled required records are all cited (missing evidence).
+- `cited_records_relevant` — cited records are `target_name` (and the case unit, for numeric) (wrong evidence).
+- `cited_records_within_window` — cited event_times in [window_start, as_of] (numeric) or ≤ as_of (state) (temporally invalid evidence).
+- `evidence_supports_claim` — numeric: affirmed value = mean of cited relevant readings ± tolerance; state: every value asserted as current appears in a cited record. Passes vacuously when there is no single claim (answer_correctness owns that).
+- `no_contradicting_evidence` (state only) — no cited relevant record whose value the answer neither asserts nor explicitly frames (past/negated) while a claim is made.
 
-**Numerical correctness (NumericCase):**
-1. `no_future_evidence` [temporal] → `TEMPORAL_FAILURE`.
-2. `evidence_matches_expected_readings` [evidence] → `NUMERICAL_FAILURE`; cited ids == labelled ids.
-3. `value_extracted` [answer] → `NUMERICAL_FAILURE`; exactly one distinct *affirmed* number immediately followed by the unit.
-4. `value_within_tolerance` [answer] → `NUMERICAL_FAILURE`; `|actual − expected| ≤ tolerance` (absolute, + 1e-9 float epsilon).
+**answer_correctness**:
+- State (`TEMPORAL_FAILURE`): `answer_asserts_current_value`; `answer_does_not_assert_other_value`.
+- Numeric (`NUMERICAL_FAILURE`): `value_extracted` (exactly one distinct affirmed number + unit); `value_within_tolerance` (absolute + 1e-9 epsilon).
+
+**Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues and contrastive negation only; "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
+
+**Separation examples (observed):** `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
 
 ## 13. Adversarial Test Cases
 
-Suite cases (as_of 2026-04-01):
-- `goal_update_chronological`, `goal_update_reversed`, `goal_future_record`, `goal_late_arriving_record` — expected current goal "weight training" (g2).
-- `rhr_mean_7d` — 7 daily readings, older readings outside the window; expected 384/7 ≈ 54.857 bpm, tolerance 0.1.
-- `rhr_mean_7d_late_sync` — last reading (62 bpm) recorded after as_of; expected 330/6 = 55.0 bpm (leaking it gives 56.0).
+Fixture suite (as_of 2026-04-01): `goal_update_chronological`, `goal_update_reversed`, `goal_future_record`, `goal_late_arriving_record` (expected "weight training", g2); `rhr_mean_7d` (384/7 ≈ 54.857 bpm, tol 0.1); `rhr_mean_7d_late_sync` (330/6 = 55.0; leaking gives 56.0).
 
-Adversarial answer texts (unit tests, injected into an otherwise-correct trace): negated, past-framed, hedged, stale, both values, "X is not your goal; it is Y" → fail; "Y, not X", "switched from X to Y", "Y. No longer X", "Previously X; now Y" → pass. Numeric: wrong value, no unit, range, hedged, negated → fail; "Not 60 bpm, but 54.9 bpm" → pass.
+PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.634286, 7 readings), `phia465_rhr_mean_14d` (59.649231, 13 readings — 2023-10-21 missing in source, not imputed).
 
-Planned: stale memory, unsupported causality, contradictory signals, missing context, evidence mismatch, counterfactual.
+Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed).
+
+Planned: stale memory, unsupported causality, contradictory signals (wearable vs self-report), missing context, counterfactual.
 
 ## 14. Metrics
 
-Per evaluator: pass rate = passed cases / evaluated cases. Plus failures by type and aspect. All numbers come from actual runs only.
+Per evaluator: pass rate = passed cases / evaluated cases; failures by type and check. All numbers come from actual runs only.
 
 ## 15. Development Phases
 
-0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal hardened ✅, numerical ✅) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
+0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅; remaining: contradiction, missing-data, causal restraint, uncertainty/abstention) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
 
 ## 16. Completed Work
 
-- Phase 0: empty directory audited; Python 3.11, pydantic 2.9, pytest; no API key; no datasets.
-- Phase 1: vertical slice. Committed `b40e90c`.
-- Phase 2 (partial): temporal evaluator hardened; numerical evaluator; dataset verification.
+- Phase 0: empty directory audited; Python 3.11, pydantic 2.9, pytest; no API key.
+- Phase 1: vertical slice.
+- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter.
+- Git: `origin` = https://github.com/Adhithyan245/PulseEval.git; history rewritten 2026-10-02 to remove Claude co-author trailers (user decision); commits use the user's identity only.
 
 ## 17. In-Progress Work
 
@@ -214,28 +239,29 @@ None (stopped for review).
 
 ## 18. Planned Work
 
-1. (Proposed, needs approval — moves part of Phase 5 earlier) Resolve PHIA answer→user mapping from the repo's code (`data_utils.py`, `phia_demo.ipynb`); if unresolvable, recompute ground truth for a few template questions ourselves. Then a minimal `summary_df` → `MemberTimeline` adapter feeding `NumericCase`s.
-2. Evidence-grounding evaluator (cited IDs exist and support claimed values).
-3. Contradiction, missing-data, causal-restraint, uncertainty/abstention evaluators.
+1. Missing-data handling evaluator (agent must report/acknowledge gaps, e.g. "13 of 14 days"; no imputation claims) — PHIA user 465's missing days give a natural case.
+2. Contradiction handling (wearable vs self-report), causal restraint, uncertainty/abstention evaluators.
 
 ## 19. Deferred Work
 
-LLM-backed agent and LLM judge (until the deterministic layer is trusted — user decision); MMASH download (priority 2); full PHIA download/loader; memory lifecycle (Phase 3); reporting module (Phase 6); UI (Phase 7); pandas/numpy/openpyxl dependencies (PHIA xlsx was inspected with stdlib `zipfile`; add `openpyxl` only if a loader needs it).
+LLM-backed agent and LLM judge (until the deterministic layer is trusted — user decision); MMASH download; using PHIA labels (not reproducible); more PHIA users/templates; PHA (successor) inspection; memory lifecycle (Phase 3); reporting module (Phase 6); UI (Phase 7); pandas/numpy/openpyxl.
 
 ## 20. Known Limitations
 
 - Agent is rule-based; it validates the evaluator pipeline, not LLM behaviour.
-- Fixture data is synthetic and tiny (1 member, 6 cases); results say nothing about real agents.
-- Answer-text analysis is lexical English heuristics: misses paraphrases of values ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation ("That's not it." referring back), and cue words used in non-negating senses. It errs toward failing answers it cannot parse.
-- Number extraction requires the unit immediately after the number ("54.9 bpm"); spelled-out numbers are not supported.
-- Numeric tolerance is absolute only.
+- Data is tiny: 6 synthetic fixture cases + 2 PHIA-derived cases (1 synthetic PHIA user).
+- PHIA cases require local CC BY-NC data; tests skip without it. PHIA has no ingestion timestamps, so late-arrival cannot be studied on PHIA data.
+- Answer-text analysis is lexical English heuristics: misses paraphrases ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation; errs toward failing answers it cannot parse.
+- Grounding `evidence_supports_claim` (state) only recognises claims of values that exist in the timeline; a fabricated free-text value is caught by answer_correctness, not grounding. Numeric support assumes the aggregate is a mean.
+- Numeric tolerance is absolute; number extraction requires the unit right after the number.
 - Two question intents.
 
 ## 21. Research References
 
-- PHIA: Merrill MA, Paruchuri A, Rezaei N, et al. "Transforming wearable data into personal health insights using large language model agents." arXiv:2406.06464 (verified). Journal version in Nature Communications — details unverified.
+- PHIA: Merrill MA, Paruchuri A, Rezaei N, et al. "Transforming wearable data into personal health insights using large language model agents." arXiv:2406.06464 (verified). Journal version — details unverified.
+- PHA (successor to PHIA): arXiv:2508.20148 — linked from PHIA README; not read.
 - MMASH: Rossi A et al. (2020), PhysioNet, DOI 10.13026/cerq-fc86 (verified).
-- Not yet verified — verify before citing: PHIA+, PH-LLM, Personal Health Agent, WHOOP public AI-evaluation engineering posts. No claim of novelty; no WHOOP internal access.
+- Not yet verified — verify before citing: PHIA+, PH-LLM, WHOOP public AI-evaluation engineering posts. No claim of novelty; no WHOOP internal access.
 
 ## 22. Architecture Decisions
 
@@ -274,7 +300,7 @@ Scope impact: Minor
 
 ### ADR-004 — Split evaluation into a subpackage
 
-Status: Implemented
+Status: Implemented (file layout partly superseded by ADR-008)
 Date: 2026-10-02
 Original approach: single `evaluation.py` (ADR-001).
 New approach: `evaluation/` with `schemas.py` (taxonomy + result models), `text.py` (deterministic answer-text analysis), `temporal.py`, `numerical.py`; `__init__.py` holds `run_suite` (dispatch by case kind).
@@ -296,7 +322,7 @@ Scope impact: Minor
 
 ### ADR-006 — Typed case union
 
-Status: Implemented
+Status: Implemented (dispatch superseded by ADR-008: all evaluators run on all cases)
 Date: 2026-10-02
 Original approach: one `Case` model for current-state questions.
 New approach: `StateCase` and `NumericCase` (discriminated by `kind`); `run_suite` dispatches the temporal vs numerical evaluator by kind.
@@ -304,6 +330,28 @@ Reason: numeric cases need expected float, unit, tolerance, expected readings.
 Trade-offs: none significant.
 Affected components: scenarios.py, evaluation.
 Scope impact: Minor
+
+### ADR-007 — PHIA labels are not ground truth; minimal adapter with recomputed values
+
+Status: Implemented
+Date: 2026-10-02
+Original approach: use PHIA objective answers as numeric ground truth via a `summary_df` → `MemberTimeline` adapter.
+New approach: PHIA labels are kept as a reference resource only. A single small module (`phia.py`) loads a local PHIA `summary_df_<id>.csv` into a `MemberTimeline` and defines a few `NumericCase`s whose expected values PulseEval recomputed independently from the published CSV (literal values in code, provenance recorded on each case, re-verified by a test that reads the CSV with the stdlib). Every case now carries a `provenance` string.
+Reason: mapping investigation (§8) shows persona files map to users, but labels are not reproducible from the published CSVs (e.g. user 465 7-day mean RHR: 61.634 recomputed vs 61.18 PHIA label, with all 7 readings present).
+Trade-offs: PHIA cases only run when the CC BY-NC data is present locally (tests skip otherwise); no claim of comparability with PHIA's published scores.
+Affected components: new `phia.py`, scenarios.py (provenance), CLI (`--phia DIR`), tests.
+Scope impact: Minor
+
+### ADR-008 — One evaluator per dimension; evidence-grounding evaluator
+
+Status: Implemented
+Date: 2026-10-02
+Original approach: temporal and numerical evaluators each mixed temporal / evidence / answer checks (tagged by `aspect`).
+New approach: three independent evaluators run on every case: `temporal_consistency` (nothing retrieved/cited was unknowable at as_of), `evidence_grounding` (cited records exist, include the required ones, are relevant, lie in the question's valid window, support the claim, and none contradicts it), `answer_correctness` (state: current value affirmed, no other value affirmed; numeric: one affirmed value within tolerance). `aspect` removed (the evaluator is the dimension). `numerical.py` → `answer.py`; new `grounding.py`. Cases gain `target_name`, `window_start` (numeric) so grounding can be checked.
+Reason: user requirement that a trace can fail one dimension while passing the others; grounding was previously folded into other evaluators.
+Trade-offs: three results per case; small duplication of claim extraction between answer and grounding (shared via `text.py`).
+Affected components: evaluation/*, scenarios.py, CLI, tests.
+Scope impact: Moderate
 
 ## 23. Change Log
 
@@ -327,6 +375,26 @@ Impact: Bugs found and fixed during this work: (1) clause splitting before every
 Files affected: agent.py, scenarios.py, __main__.py, evaluation/* (new), tests/test_temporal.py (renamed from test_evaluation.py), tests/test_numerical.py (new), README.md, PROJECT_CONTEXT.md.
 Scope impact: Minor
 
+### 2026-10-02 — Git remote + history cleanup
+
+Status: Implemented
+Original plan: n/a.
+Change: `origin` set to https://github.com/Adhithyan245/PulseEval.git (user's repo, only remote); commits rewritten to remove Claude co-author trailers (trees unchanged; new hashes c9a794d, 804fcd8) and force-pushed with lease at the user's explicit request.
+Reason: user wants only their identity in attribution.
+Impact: standing rule — no Claude/Anthropic co-author lines on PulseEval commits.
+Files affected: none (history only).
+Scope impact: None
+
+### 2026-10-02 — PHIA mapping investigation, evidence grounding, evaluator split
+
+Status: Implemented
+Original plan: build PHIA adapter if a question→user mapping exists; then evidence grounding.
+Change: mapping investigated (§8): persona↔user supported empirically, but PHIA labels are not reproducible from published CSVs → not used as ground truth (ADR-007); minimal `phia.py` adapter + 2 recomputed cases with provenance; evaluators restructured into temporal / evidence grounding / answer (ADR-008); `numerical.py` → `answer.py`; new `grounding.py`; `aspect` removed; cases gain `target_name`, `provenance`, `window_start`; CLI `--phia DIR`; scenarios v0.3.0.
+Reason: user requirement that ground truth have established provenance and that grounding be independent of temporal and answer correctness.
+Impact: Observed runs (fixture + PHIA, 8 cases): reference 8/8 on all three; `input_order` temporal 8/8, grounding 7/8, answer 7/8; `no_as_of` 5/8, 6/8, 5/8; `no_window` 8/8, 4/8, 4/8. 56 tests pass with PHIA data present, 53 pass + 3 skipped without.
+Files affected: scenarios.py, phia.py (new), __main__.py, evaluation/{__init__,schemas,text,temporal,grounding (new),answer (renamed from numerical)}.py, tests/{test_temporal,test_answer (renamed from test_numerical),test_grounding,test_suite,test_phia}.py, README.md, PROJECT_CONTEXT.md.
+Scope impact: Moderate
+
 ## 24. Rules for Future Changes
 
 - Read CURRENT STATUS first; keep it true.
@@ -335,3 +403,5 @@ Scope impact: Minor
 - Never report numbers that were not produced by a run.
 - Version-bump `AGENT_VERSION` / `*_EVALUATOR_VERSION` / `SCENARIOS_VERSION` when results could change.
 - No LLM agent/judge and no UI without explicit user approval.
+- Never add Claude/Anthropic co-author lines to commits; user's git identity only.
+- Never label a value "ground truth" without recorded provenance (`Case.provenance`).

@@ -6,14 +6,14 @@ Expected values are written by hand, never computed by agent code.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 
 from pydantic import BaseModel
 
 from pulseeval.timeline import MemberTimeline, Record
 
-SCENARIOS_VERSION = "0.2.0"
+SCENARIOS_VERSION = "0.3.0"
 
 
 class _CaseBase(BaseModel):
@@ -22,21 +22,23 @@ class _CaseBase(BaseModel):
     timeline: MemberTimeline
     question: str
     as_of: datetime
+    target_name: str  # record name the question is about
+    provenance: str  # where the expected values come from
 
 
 class StateCase(_CaseBase):
-    """'What is the current X?' — evaluated for temporal consistency."""
+    """'What is the current X?'"""
 
     kind: Literal["current_state"] = "current_state"
-    target_name: str  # record name the question is about
     expected_record_id: str  # current record at as_of
     expected_value: str
 
 
 class NumericCase(_CaseBase):
-    """Aggregate over a window — evaluated for numerical correctness."""
+    """Mean of `target_name` over [window_start, as_of]."""
 
     kind: Literal["numeric"] = "numeric"
+    window_start: datetime
     expected_value: float
     unit: str
     tolerance: float  # absolute, in `unit`
@@ -57,6 +59,7 @@ def _r(record_id, kind, name, value, event, recorded=None, unit=None) -> Record:
 
 
 AS_OF = datetime(2026, 4, 1)
+FIXTURE_PROVENANCE = "Hand-written synthetic fixture; expected values derived by hand (see comments)."
 
 # --- current-state cases (training goal) ---------------------------------------
 
@@ -76,6 +79,7 @@ def _goal_case(case_id: str, description: str, records: list[Record]) -> StateCa
         case_id=case_id, description=description,
         timeline=MemberTimeline(member_id="M001", records=records),
         question=GOAL_QUESTION, as_of=AS_OF, target_name="training_goal",
+        provenance=FIXTURE_PROVENANCE,
         expected_record_id="g2", expected_value="weight training",
     )
 
@@ -96,7 +100,8 @@ def _rhr_case(case_id: str, description: str, records: list[Record],
     return NumericCase(
         case_id=case_id, description=description,
         timeline=MemberTimeline(member_id="M001", records=_BASE + records),
-        question=RHR_QUESTION, as_of=AS_OF,
+        question=RHR_QUESTION, as_of=AS_OF, target_name="resting_hr",
+        provenance=FIXTURE_PROVENANCE, window_start=AS_OF - timedelta(days=7),
         expected_value=expected, unit="bpm", tolerance=0.1, expected_record_ids=ids,
     )
 

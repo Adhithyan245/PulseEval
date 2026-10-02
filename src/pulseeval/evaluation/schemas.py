@@ -25,12 +25,10 @@ class FailureType(str, Enum):
 
 
 Severity = Literal["low", "medium", "high"]
-Aspect = Literal["temporal", "evidence", "answer"]
 
 
 class Check(BaseModel):
     name: str
-    aspect: Aspect
     passed: bool
     explanation: str
 
@@ -38,7 +36,6 @@ class Check(BaseModel):
 class Failure(BaseModel):
     failure_type: FailureType
     check: str
-    aspect: Aspect
     severity: Severity
     query: str
     expected_behavior: str
@@ -61,7 +58,6 @@ class CheckSpec(BaseModel):
     """One deterministic check outcome, before it is turned into Check/Failure."""
 
     name: str
-    aspect: Aspect
     failure_type: FailureType
     passed: bool
     severity: Severity
@@ -72,14 +68,14 @@ class CheckSpec(BaseModel):
 
 def build_result(case_id: str, evaluator: str, version: str,
                  trace: AgentTrace, specs: list[CheckSpec]) -> EvaluationResult:
-    checks = [Check(name=s.name, aspect=s.aspect, passed=s.passed, explanation=s.actual_behavior)
+    checks = [Check(name=s.name, passed=s.passed, explanation=s.actual_behavior)
               for s in specs]
     failures = [
         Failure(
-            failure_type=s.failure_type, check=s.name, aspect=s.aspect, severity=s.severity,
+            failure_type=s.failure_type, check=s.name, severity=s.severity,
             query=trace.query, expected_behavior=s.expected_behavior,
             actual_behavior=s.actual_behavior, evidence=s.evidence, trace=trace,
-            explanation=f"{evaluator} check '{s.name}' ({s.aspect}) failed.",
+            explanation=f"{evaluator} check '{s.name}' failed.",
         )
         for s in specs if not s.passed
     ]
