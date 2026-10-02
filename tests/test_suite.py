@@ -7,6 +7,7 @@ from pulseeval.evaluation import run_suite
 from pulseeval.scenarios import CASES
 
 T, G, A, M = "temporal_consistency", "evidence_grounding", "answer_correctness", "missing_data"
+C = "contradiction_handling"
 
 
 def _failures(agent):
@@ -26,11 +27,13 @@ def _failures(agent):
         # leaked reading is relevant and in-window (grounding passes) but was not knowable,
         # so claiming "all 7 days had data" misstates coverage at as_of
         "rhr_mean_7d_late_sync": {T, A, M},
+        "recovery_late_self_report": {T, C},  # unknowable report -> invented conflict
     }),
     (HealthAgent(respect_window=False), {
         "rhr_mean_7d": {G, A},  # complete window: coverage claim is true
         "rhr_mean_7d_late_sync": {G, A, M},
         "rhr_mean_7d_gap": {G, A, M},
+        "recovery_stale_self_report": {G, C},  # stale report -> out of window, invented conflict
     }),
     (HealthAgent(report_coverage=False), {
         # right number, right evidence, nothing unknowable -- only coverage misrepresented
@@ -41,7 +44,19 @@ def _failures(agent):
         "rhr_mean_7d_late_sync": {M},  # carried-forward 55 leaves the mean at 55.0 exactly
         "rhr_mean_7d_gap": {G, A, M},
     }),
-], ids=["reference", "input_order", "no_as_of", "no_window", "silent_gaps", "impute"])
+    (HealthAgent(ignore_self_report=True), {
+        "recovery_conflict_good_data_exhausted": {G, C},
+        "recovery_conflict_poor_data_energetic": {G, C},
+        "recovery_agree_good": {G},  # report uncited, but no conflict to mishandle
+        "recovery_agree_poor": {G},
+    }),
+    (HealthAgent(dismiss_self_report=True), {
+        # cites both sources correctly; only the representation of the conflict is wrong
+        "recovery_conflict_good_data_exhausted": {C},
+        "recovery_conflict_poor_data_energetic": {C},
+    }),
+], ids=["reference", "input_order", "no_as_of", "no_window", "silent_gaps", "impute",
+        "ignore_self_report", "dismiss_self_report"])
 def test_fault_injected_agents_fail_expected_dimensions(agent, expected):
     assert _failures(agent) == expected
 

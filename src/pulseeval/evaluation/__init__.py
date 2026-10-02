@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pulseeval.agent import HealthAgent
 from pulseeval.evaluation.answer import evaluate_answer_correctness
+from pulseeval.evaluation.contradiction import evaluate_contradiction_handling
 from pulseeval.evaluation.grounding import evaluate_evidence_grounding
 from pulseeval.evaluation.missing_data import evaluate_missing_data
 from pulseeval.evaluation.schemas import EvaluationResult
@@ -14,7 +15,8 @@ from pulseeval.evaluation.temporal import evaluate_temporal_consistency
 from pulseeval.scenarios import Case
 
 EVALUATORS = (evaluate_temporal_consistency, evaluate_evidence_grounding,
-              evaluate_answer_correctness, evaluate_missing_data)
+              evaluate_answer_correctness, evaluate_missing_data,
+              evaluate_contradiction_handling)
 
 
 def run_suite(agent: HealthAgent, cases: list[Case]) -> list[EvaluationResult]:

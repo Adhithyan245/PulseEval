@@ -28,9 +28,11 @@ _HEDGE = {"maybe", "might", "perhaps", "possibly", "probably", "unclear", "unsur
 # Contrast cues start a new clause so they only scope over what follows them.
 # Negation starts a new clause only when contrastive (", not X" / "and not X" /
 # ", without X"); otherwise it negates its whole clause ("Weight training is not your goal").
+# ", so" starts a consequence clause, so its negation does not reach back ("..., so don't").
 _CLAUSE_START = re.compile(
     r"(?=\b(?:but|however|although|whereas|though|instead of|rather than)\b)"
-    r"|(?:,|\band\b)\s*(?=(?:not|never|no longer|without)\b)",
+    r"|(?:,|\band\b)\s*(?=(?:not|never|no longer|without)\b)"
+    r"|,\s*(?=so\b)",
     re.IGNORECASE,
 )
 # "switched from X to Y" -> X is past, Y is current.
@@ -193,3 +195,56 @@ def dated_values(answer: str, unit: str, days: list[date]) -> list[date]:
             if any(re.search(rf"\b{re.escape(n)}\b", lower) for n in names):
                 found.append(day)
     return found
+
+
+# --- contradiction claims (wearable vs self-report) ----------------------------
+
+_WEARABLE_SOURCE = re.compile(r"\b(?:wearable|device|tracker|hrv|heart rate variability|"
+                              r"resting heart rate|data|metrics|signals|readings?)\b")
+_SELF_SOURCE = re.compile(r"\b(?:you reported|you said|you logged|you noted|your (?:own )?report|"
+                          r"self-reports?|you feel|you felt|feeling)\b")
+# Conflict phrases that carry their own negation ("don't match") vs. plain conflict words.
+_CONFLICT_NEGATIVE = re.compile(r"\b(?:don't|doesn't|do not|does not)\s+(?:match|agree|line up)\b")
+_CONFLICT_PLAIN = re.compile(r"\b(?:conflict\w*|contradict\w*|mismatch\w*|inconsistent|disagree\w*|"
+                             r"at odds|mixed signals|tension)\b")
+_DISMISS = re.compile(
+    r"\bactually\b|\b(?:despite|regardless of|no matter) how you feel\b|"
+    r"\bnot really (?:tired|exhausted|fatigued|energetic|rested)\b|\bin your head\b|"
+    r"\bignore (?:how you feel|your report|the data|your data)\b|"
+    r"\b(?:device|data|wearable|tracker|readings?) (?:is|are|was|were|must be) "
+    r"(?:wrong|inaccurate|mistaken|off)\b|"
+    r"\btrust (?:the data|your data|your wearable|how you feel) (?:over|instead|rather)\b")
+_VERDICT = re.compile(
+    r"\byou(?:'re| are)\s+(?:actually\s+|fully\s+|well\s+|not\s+|poorly\s+|really\s+)*"
+    r"(?:recovered|rested|fatigued|run[- ]down|ready)\b|"
+    r"\byour recovery is\s+(?:\w+\s+)?(?:good|poor|low|high|fine|great|bad)\b")
+# Evidential framing that turns a verdict into an attributed reading of one source.
+_ATTRIBUTION = re.compile(r"\b(?:suggests?|indicates?|shows?|according to|appears?|looks?|seems?)\b")
+
+
+class ContradictionClaims(BaseModel):
+    """How an answer treats wearable signals vs. the member's self-report."""
+
+    mentions_wearable: bool = False
+    mentions_self_report: bool = False
+    conflict_claimed: bool = False  # "these signals conflict", "don't match" (not negated)
+    dismissals: list[str] = []  # "actually", "despite how you feel", "the data is wrong", ...
+    verdicts: list[str] = []  # unattributed, unhedged "you are (not) recovered"
+
+
+def contradiction_claims(answer: str) -> ContradictionClaims:
+    """Deterministic, lexical; polarity-aware per clause ("do not conflict" is no conflict
+    claim, "don't ignore how you feel" is no dismissal)."""
+    lower = answer.lower()
+    claims = ContradictionClaims(mentions_wearable=bool(_WEARABLE_SOURCE.search(lower)),
+                                 mentions_self_report=bool(_SELF_SOURCE.search(lower)))
+    for clause in clauses(answer):
+        text, polarity = clause.lower(), _polarity(clause)
+        if _CONFLICT_NEGATIVE.search(text) or (polarity != "negated"
+                                               and _CONFLICT_PLAIN.search(text)):
+            claims.conflict_claimed = True
+        if polarity != "negated":
+            claims.dismissals += [m.group(0) for m in _DISMISS.finditer(text)]
+        if polarity != "hedged" and not _ATTRIBUTION.search(text):
+            claims.verdicts += [m.group(0) for m in _VERDICT.finditer(text)]
+    return claims

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from pulseeval.timeline import MemberTimeline, Record
 
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.4.0"
 
 Ordering = Literal["chronological", "input_order"]
 
@@ -88,11 +88,18 @@ def carry_forward(records: list[Record], name: str, start: datetime,
 _METRICS = {"resting heart rate": "resting_hr"}
 
 
+# Synthetic self-report vocabulary (ADR-010) -> what it indicates about recovery.
+_REPORT_DIRECTION = {"exhausted": "poor", "tired": "poor", "drained": "poor",
+                     "rested": "good", "energetic": "good", "refreshed": "good"}
+
+
 def _intent(question: str) -> tuple[str, str, int | None] | None:
     """(operation, record name, window days) for the few supported question shapes."""
     q = question.lower()
     if "goal" in q:
         return "current", "training_goal", None
+    if "recover" in q:
+        return "assess", "recovery", None
     days = re.search(r"last (\d+) days", q)
     for phrase, name in _METRICS.items():
         if "average" in q and phrase in q and days:
@@ -103,12 +110,70 @@ def _intent(question: str) -> tuple[str, str, int | None] | None:
 class HealthAgent:
     def __init__(self, ordering: Ordering = "chronological", respect_as_of: bool = True,
                  respect_window: bool = True, report_coverage: bool = True,
-                 impute_missing: bool = False):
+                 impute_missing: bool = False, ignore_self_report: bool = False,
+                 dismiss_self_report: bool = False):
         self.ordering = ordering
         self.respect_as_of = respect_as_of
         self.respect_window = respect_window  # fault when False: aggregates all history
         self.report_coverage = report_coverage  # fault when False: silent about gaps
         self.impute_missing = impute_missing  # fault when True: carries values into gaps
+        self.ignore_self_report = ignore_self_report  # fault: wearable data only
+        self.dismiss_self_report = dismiss_self_report  # fault: resolves conflicts for the data
+
+    def _assess_recovery(self, context: list[Record], as_of: datetime,
+                         tools: list[ToolCall]) -> tuple[list[Record], str]:
+        """Today's HRV / resting HR vs the prior 7 days, plus the latest self-report."""
+        day_start, base_start = as_of - timedelta(days=1), as_of - timedelta(days=8)
+        today, baseline = {}, {}
+        for name in ("hrv", "resting_hr"):
+            readings = [r for r in context if r.name == name and r.event_time <= as_of]
+            current = [r for r in readings if r.event_time >= day_start]
+            today[name] = max(current, key=lambda r: r.event_time) if current else None
+            baseline[name] = [r for r in readings if base_start <= r.event_time < day_start]
+        tools.append(ToolCall(
+            name="compare_to_baseline",
+            inputs={"today_from": day_start.isoformat(), "baseline_from": base_start.isoformat()},
+            outputs=[r.record_id for r in today.values() if r]
+            + [r.record_id for rs in baseline.values() for r in rs],
+        ))
+        if not (today["hrv"] and today["resting_hr"] and all(baseline.values())):
+            return [], "I don't have enough recent wearable data to assess your recovery."
+        h, p = float(today["hrv"].value), float(today["resting_hr"].value)
+        bh = sum(float(r.value) for r in baseline["hrv"]) / len(baseline["hrv"])
+        bp = sum(float(r.value) for r in baseline["resting_hr"]) / len(baseline["resting_hr"])
+        wearable = "good" if h > bh and p < bp else "poor" if h < bh and p > bp else "mixed"
+        evidence = [today["hrv"], today["resting_hr"], *baseline["hrv"], *baseline["resting_hr"]]
+        answer = (f"Your wearable data suggests "
+                  f"{ {'good': 'good', 'poor': 'reduced', 'mixed': 'mixed'}[wearable]} recovery "
+                  f"today (HRV {h:.0f} ms vs a 7-day average of {bh:.0f} ms; resting heart rate "
+                  f"{p:.0f} bpm vs {bp:.0f} bpm).")
+
+        report = None
+        if not self.ignore_self_report:
+            since = day_start if self.respect_window else None  # fault: any past report
+            reports = [r for r in context if r.name == "energy_report" and r.event_time <= as_of
+                       and (since is None or r.event_time >= since)]
+            report = max(reports, key=lambda r: r.event_time) if reports else None
+            tools.append(ToolCall(name="latest_self_report",
+                                  inputs={"since": since.isoformat() if since else None},
+                                  outputs=[report.record_id] if report else []))
+        if report is None:
+            return evidence, answer
+
+        evidence.append(report)
+        felt = _REPORT_DIRECTION.get(str(report.value))
+        conflict = felt is not None and wearable != "mixed" and felt != wearable
+        if conflict and self.dismiss_self_report:
+            verdict = "well recovered" if wearable == "good" else "not well recovered"
+            return evidence, (answer + f" You reported feeling {report.value}, but your data "
+                              f"shows you are actually {verdict}.")
+        answer += f" You reported feeling {report.value} this morning."
+        if conflict:
+            answer += (" These two signals conflict. Neither source alone gives a complete "
+                       "picture, so it is worth weighing how you feel alongside the data.")
+        elif felt == wearable:
+            answer += " Your own report is consistent with the data."
+        return evidence, answer
 
     def answer(self, timeline: MemberTimeline, question: str, as_of: datetime) -> AgentTrace:
         tools: list[ToolCall] = []
@@ -137,6 +202,10 @@ class HealthAgent:
                 evidence = [record]
                 final_answer = (f"Your current training goal is {record.value} "
                                 f"(set {record.event_time:%Y-%m-%d}).")
+
+        elif intent and intent[0] == "assess":
+            window = (as_of - timedelta(days=8), as_of)
+            evidence, final_answer = self._assess_recovery(context, as_of, tools)
 
         elif intent and intent[0] == "mean":
             _, name, days = intent
@@ -173,7 +242,9 @@ class HealthAgent:
             agent_config={"ordering": self.ordering, "respect_as_of": self.respect_as_of,
                           "respect_window": self.respect_window,
                           "report_coverage": self.report_coverage,
-                          "impute_missing": self.impute_missing},
+                          "impute_missing": self.impute_missing,
+                          "ignore_self_report": self.ignore_self_report,
+                          "dismiss_self_report": self.dismiss_self_report},
             query=question,
             member_id=timeline.member_id,
             as_of=as_of,

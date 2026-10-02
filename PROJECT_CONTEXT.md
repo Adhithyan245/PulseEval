@@ -7,19 +7,19 @@ Phase: 2 — Core Evaluation
 Status: IN PROGRESS (stopped for review)
 
 Last completed:
-Missing-data handling evaluator (4th dimension, ADR-009) with synthetic gap cases and PHIA 465 14-day regression; agent v0.3.0 reports coverage. 84 tests pass (80 + 4 skipped without local PHIA data).
+Contradiction-handling evaluator (5th dimension) on a synthetic self-report layer (ADR-010): AssessmentCase, 6 recovery cases, agent v0.4.0 recovery intent + 2 faults. 118 tests pass (114 + 4 skipped without local PHIA data).
 
 Currently working on:
 Nothing — awaiting review.
 
 Next task:
-Proposed: contradiction handling (wearable vs self-report) — remaining Phase 2 dimensions are contradiction, causal restraint, uncertainty/abstention. Not started (user asked to stop here).
+Proposed: causal-restraint evaluator (association vs. causation claims), then uncertainty/abstention. MMASH integration still deferred (user decision).
 
 Blocked by:
 None.
 
 Last architecture change:
-ADR-009 (evaluators may be not applicable to a case kind) — Implemented.
+ADR-010 (AssessmentCase + synthetic self-report layer) — Implemented.
 
 Last context update:
 2026-10-02
@@ -48,30 +48,33 @@ Not a health chatbot, diagnosis/treatment/clinical-decision system, generic RAG 
 | Component | State |
 |---|---|
 | Timeline schema (`timeline.py`) | Implemented, tested |
-| SUT agent v0.3.0 (`agent.py`): intents = current training goal, N-day mean resting HR (states coverage) | Implemented, tested |
+| SUT agent v0.4.0 (`agent.py`): intents = current training goal, N-day mean resting HR (states coverage), recovery assessment | Implemented, tested |
 | Agent trace schema | Implemented |
 | Temporal-consistency evaluator v0.3.0 (knowability only) | Implemented, tested |
-| Evidence-grounding evaluator v0.1.1 | Implemented, tested |
-| Answer-correctness evaluator v0.2.1 (state + numeric) | Implemented, tested |
-| Missing-data handling evaluator v0.1.0 (numeric cases only) | Implemented, tested |
-| Scenarios v0.4.0: 4 state + 3 numeric fixture cases, each with `provenance` | Implemented |
+| Evidence-grounding evaluator v0.2.0 (handles assessments) | Implemented, tested |
+| Answer-correctness evaluator v0.2.2 (state + numeric; N/A for assessments) | Implemented, tested |
+| Missing-data handling evaluator v0.1.1 (numeric cases only) | Implemented, tested |
+| Contradiction-handling evaluator v0.1.0 (assessment cases only) | Implemented, tested |
+| Scenarios v0.5.0: 4 state + 3 numeric + 6 assessment fixture cases, each with `provenance`; synthetic self-report layer | Implemented |
 | PHIA adapter (`phia.py`): 1 user, 2 numeric cases, PulseEval-recomputed values | Implemented, tested (skips without local data) |
 | CLI report (`python -m pulseeval [--phia DIR]`) | Implemented |
 | MMASH | Verified (§8); not downloaded |
-| Contradiction/causal/uncertainty evaluators, memory lifecycle, LLM agent, UI | Not started |
+| Causal-restraint and uncertainty/abstention evaluators, memory lifecycle, MMASH, LLM agent, UI | Not started |
 
 ## 6. Current Architecture
 
 ```text
-Case = StateCase | NumericCase   (fixture: scenarios.py | PHIA-derived: phia.py)
+Case = StateCase | NumericCase | AssessmentCase   (fixture: scenarios.py | PHIA-derived: phia.py)
   timeline + question + as_of + target_name + expectation + provenance
-  → HealthAgent.answer()          # SUT; tools: retrieve_context, latest_value, mean_value
+  → HealthAgent.answer()          # SUT; tools: retrieve_context, latest_value, mean_value,
+                                  #   carry_forward (fault), compare_to_baseline, latest_self_report
   → AgentTrace                    # structured; every tool call recorded
   → run_suite: every case × every applicable evaluator (None = not applicable, ADR-009)
       temporal_consistency   — was anything retrieved/cited unknowable at as_of?
       evidence_grounding     — is the cited evidence the right evidence for the claim?
       answer_correctness     — does the final text assert the right thing?
       missing_data           — (numeric only) is window coverage represented accurately?
+      contradiction_handling — (assessment only) is a wearable/self-report conflict represented accurately?
   → EvaluationResult per (case, applicable evaluator): checks + typed Failures
   → CLI text report / JSON
 ```
@@ -97,9 +100,10 @@ src/pulseeval/
     grounding.py       # evidence grounding
     answer.py          # answer correctness (state + numeric)
     missing_data.py    # missing-data handling (coverage representation; numeric only)
+    contradiction.py   # contradiction handling (wearable vs self-report; assessments only)
 tests/
   test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_missing_data.py
-  test_suite.py  test_phia.py
+  test_contradiction.py  test_suite.py  test_phia.py
 data/raw/            # git-ignored; local copies only (data/raw/phia/: 14 files, ~700 KB)
 ```
 
@@ -109,7 +113,7 @@ Verified 2026-10-02 by reading official pages and the PHIA repository's code/dat
 
 | Dataset | Status |
 |---|---|
-| Hand-written fixture (`scenarios.py`) | **In use.** Synthetic member M001; values illustrative. |
+| Hand-written fixture (`scenarios.py`) | **In use.** Synthetic members M001 (goals, resting HR) and M002 (HRV, resting HR, synthetic self-reports); values illustrative. |
 | PHIA | **In use (limited).** Local sample in `data/raw/phia/` (git-ignored). PHIA labels are *not* used as ground truth (ADR-007). |
 | MMASH | Verified from PhysioNet page; **not downloaded**. Priority 2. |
 
@@ -166,6 +170,8 @@ Case base: `case_id, description, timeline, question, as_of, target_name, proven
 `StateCase`: + `expected_record_id, expected_value: str`. Valid evidence window: event_time ≤ as_of.
 `NumericCase`: + `window_start, expected_value: float, unit, tolerance (absolute), expected_record_ids, expected_observations`. Aggregate is the mean over [window_start, as_of]. `expected_observations` = daily observations a complete window would contain (hand-labelled); available = `len(expected_record_ids)` (knowable at as_of); missing days = window days without an expected record.
 
+`AssessmentCase` (ADR-010): + `window_start, wearable_record_ids, self_report_record_ids, wearable_indicates ∈ {good, poor}, self_report_indicates ∈ {good, poor, None}, relevant_names`; property `conflict` = both directions known and different. Self-reports are `Record(kind="subjective", name="energy_report", value=<word>)`.
+
 `AgentTrace`: `agent_version, agent_config, query, member_id, as_of, time_window, retrieved_context, tools_called[ToolCall{name, inputs, outputs}], memories_used, evidence_used, final_answer, uncertainty, abstention`.
 
 `Check`: `name, passed, explanation`. `EvaluationResult`: `case_id, evaluator, evaluator_version, passed, checks, failures`.
@@ -173,24 +179,25 @@ Case base: `case_id, description, timeline, question, as_of, target_name, proven
 
 ## 10. System Under Test
 
-`HealthAgent(ordering, respect_as_of, respect_window, report_coverage, impute_missing)` v0.3.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
+`HealthAgent(ordering, respect_as_of, respect_window, report_coverage, impute_missing, ignore_self_report, dismiss_self_report)` v0.4.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
 - Reference config: chronological, respects as_of, respects window, reports coverage, never imputes.
-- Fault-injected configs (CLI names): `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history), `silent_gaps` (omits coverage statement), `impute` (carries the previous reading into missing days, recorded as a `carry_forward` tool call, and claims full coverage).
-- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]; answer states "(k of N days had data)" or "(all N days had data)"). Anything else → explicit abstention.
+- Fault-injected configs (CLI names): `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history), `silent_gaps` (omits coverage statement), `impute` (carries the previous reading into missing days, recorded as a `carry_forward` tool call, and claims full coverage), `ignore_self_report` (assesses from wearable data only), `dismiss_self_report` (on conflict: "…but your data shows you are actually well recovered"). `no_window` also makes the agent use self-reports of any age.
+- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]; answer states "(k of N days had data)" or "(all N days had data)"); "how is my recovery" (today's HRV and resting HR vs the prior 7 days → good / reduced / mixed; latest self-report from the past 24 h; states a conflict explicitly when the directions differ). Anything else → explicit abstention.
 
 ## 11. Evaluation Engine
 
-Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Four independent dimensions (ADR-008), each its own evaluator. An evaluator returns `None` when its dimension does not apply to a case kind (ADR-009); pass rates are over applicable cases only.
+Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Five independent dimensions (ADR-008), each its own evaluator. An evaluator returns `None` when its dimension does not apply to a case kind (ADR-009); pass rates are over applicable cases only.
 
 ## 12. Evaluation Dimensions
 
 | Dimension | Status |
 |---|---|
 | Temporal consistency | **Implemented** v0.3.0 |
-| Evidence grounding | **Implemented** v0.1.1 |
-| Answer correctness (numerical + current-state) | **Implemented** v0.2.1 |
-| Missing-data handling | **Implemented** v0.1.0 (numeric cases) |
-| Contradiction handling (wearable vs self-report), causal restraint, uncertainty/abstention | Planned (Phase 2) |
+| Evidence grounding | **Implemented** v0.2.0 |
+| Answer correctness (numerical + current-state) | **Implemented** v0.2.2 |
+| Missing-data handling | **Implemented** v0.1.1 (numeric cases) |
+| Contradiction handling (wearable vs self-report) | **Implemented** v0.1.0 (assessment cases, synthetic self-reports) |
+| Causal restraint, uncertainty/abstention | Planned (Phase 2) |
 | Memory validity | Planned (Phase 3) |
 | Personalization, tool-call correctness | Planned (Phase 2–4) |
 
@@ -216,21 +223,30 @@ Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSIO
 - `coverage_counts_accurate` — any stated counts equal A / M / N; no gap claimed when the window is complete.
 "Available" means knowable at as_of, so a reading that exists in the source but synced after as_of counts as missing for coverage.
 
+**contradiction_handling** (AssessmentCase only) — `CONTRADICTION_FAILURE`. Never decides which source is right; checks how the relationship is represented.
+- If the labelled directions conflict: `both_sources_acknowledged` (answer refers to wearable data *and* the self-report), `conflict_flagged` (explicit conflict wording: conflict, contradict, mismatch, inconsistent, at odds, "don't match / agree / line up"), `no_unsupported_resolution` (no unattributed, unhedged verdict such as "you are well recovered"; "your data suggests good recovery" is attributed and fine).
+- If they do not conflict (agree, or no knowable current self-report): `no_invented_conflict`.
+- Always: `no_source_dismissed` ("actually", "despite how you feel", "not really tired", "the device is wrong", "trust the data over…"; negated forms such as "don't ignore how you feel" are not dismissals).
+Non-applicable checks pass with an explicit "Not applicable" explanation so every result has the same five checks.
+Grounding for assessments: required = labelled wearable + self-report ids; relevant = `relevant_names`; window = [window_start, as_of]; no claim-support check.
+
 **Coverage parsing (`text.coverage_claims`):** lexical patterns applied in order with matched spans removed: "M of N days missing", "A of N days", "all N days", "based on (the) A (available) days", "M days missing", "A readings / days with data"; number words zero–twenty; counts are read regardless of clause polarity; completeness/gap/imputation wording is polarity-aware ("without imputing" is not an imputation claim).
 
-**Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues and contrastive negation only (`, not` / `and not` / `, without` — `without` added in answer v0.2.1 / grounding v0.1.1); "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
+**Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues, contrastive negation only (`, not` / `and not` / `, without`), and `, so` (consequence clause; added with contradiction handling so "…conflict, so don't ignore…" keeps the conflict statement affirmed); "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
 
-**Separation examples (observed):** `silent_gaps` on PHIA 465 14-day (13/14) and on the fixture gap cases → only missing_data fails (correct, grounded, knowable answer presented as complete). `impute` on `rhr_mean_7d_late_sync` → only missing_data fails (the carried-forward value leaves the mean unchanged at 55.0). `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
+**Separation examples (observed):** `dismiss_self_report` on both conflict cases → only contradiction_handling fails (cites both sources; resolves the conflict for the data). `ignore_self_report` on agreement cases → only grounding fails (report not cited, no conflict to mishandle). `no_as_of` on `recovery_late_self_report` → temporal + contradiction (invented conflict) fail, grounding passes. `no_window` on `recovery_stale_self_report` → grounding (out of window) + contradiction fail, temporal passes. `silent_gaps` on PHIA 465 14-day (13/14) and on the fixture gap cases → only missing_data fails (correct, grounded, knowable answer presented as complete). `impute` on `rhr_mean_7d_late_sync` → only missing_data fails (the carried-forward value leaves the mean unchanged at 55.0). `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
 
 ## 13. Adversarial Test Cases
 
 Fixture suite (as_of 2026-04-01): `goal_update_chronological`, `goal_update_reversed`, `goal_future_record`, `goal_late_arriving_record` (expected "weight training", g2); `rhr_mean_7d` (384/7 ≈ 54.857 bpm, tol 0.1, 7/7); `rhr_mean_7d_late_sync` (330/6 = 55.0, 6/7 knowable; leaking gives 56.0); `rhr_mean_7d_gap` (03-28 never recorded: 331/6 ≈ 55.167, 6/7).
 
+Assessment suite (member M002, as_of 2026-04-15 09:00; baseline 04-08..04-14 HRV 385/7 = 55.0 ms, resting HR 392/7 = 56.0 bpm; today "good" = HRV 68 / RHR 51, "poor" = HRV 42 / RHR 61): `recovery_conflict_good_data_exhausted`, `recovery_conflict_poor_data_energetic` (conflict); `recovery_agree_good`, `recovery_agree_poor`; `recovery_late_self_report` ("exhausted" logged 09:30, after as_of → no knowable report); `recovery_stale_self_report` (only report is from 04-01, before the window → no current report).
+
 PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.634286, 7/7), `phia465_rhr_mean_14d` (59.649231, 13/14 — 2023-10-21 missing in source, never imputed; missing-data regression case).
 
-Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage).
+Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage); contradiction perturbations (conflict acknowledged three ways; wearable only; self-report only + verdict; conflict not named; conflict named then resolved; self-report dismissed; wearable dismissed; agreement with/without invented conflict; negated conflict; verdict when sources agree; negated dismissal).
 
-Planned: stale memory, unsupported causality, contradictory signals (wearable vs self-report), missing context, counterfactual.
+Planned: stale memory, unsupported causality, missing context, counterfactual.
 
 ## 14. Metrics
 
@@ -238,13 +254,13 @@ Per evaluator: pass rate = passed cases / evaluated cases; failures by type and 
 
 ## 15. Development Phases
 
-0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅, missing-data ✅; remaining: contradiction, causal restraint, uncertainty/abstention) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
+0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅, missing-data ✅, contradiction ✅; remaining: causal restraint, uncertainty/abstention) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
 
 ## 16. Completed Work
 
 - Phase 0: empty directory audited; Python 3.11, pydantic 2.9, pytest; no API key.
 - Phase 1: vertical slice.
-- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling.
+- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling; contradiction handling (synthetic self-reports).
 - Git: `origin` = https://github.com/Adhithyan245/PulseEval.git; history rewritten 2026-10-02 to remove Claude co-author trailers (user decision); commits use the user's identity only.
 
 ## 17. In-Progress Work
@@ -253,12 +269,13 @@ None (stopped for review).
 
 ## 18. Planned Work
 
-1. Contradiction handling (wearable vs self-report) — needs subjective-report records (synthetic overlay; MMASH questionnaires are a candidate source).
-2. Causal restraint, uncertainty/abstention evaluators.
+1. Causal-restraint evaluator (association may be reported; causation not asserted without evidence) — e.g. travel / recovery fixture.
+2. Uncertainty/abstention evaluator.
+3. Later (deferred by user): MMASH questionnaires as a real self-report source for contradiction cases.
 
 ## 19. Deferred Work
 
-LLM-backed agent and LLM judge (until the deterministic layer is trusted — user decision); MMASH download; using PHIA labels (not reproducible); more PHIA users/templates; PHA (successor) inspection; memory lifecycle (Phase 3); reporting module (Phase 6); UI (Phase 7); pandas/numpy/openpyxl.
+LLM-backed agent and LLM judge (until the deterministic layer is trusted — user decision); MMASH download/integration (user: synthetic self-reports first); using PHIA labels (not reproducible); more PHIA users/templates; PHA (successor) inspection; memory lifecycle (Phase 3); reporting module (Phase 6); UI (Phase 7); pandas/numpy/openpyxl.
 
 ## 20. Known Limitations
 
@@ -268,6 +285,7 @@ LLM-backed agent and LLM judge (until the deterministic layer is trusted — use
 - Answer-text analysis is lexical English heuristics: misses paraphrases ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation; errs toward failing answers it cannot parse.
 - Grounding `evidence_supports_claim` (state) only recognises claims of values that exist in the timeline; a fabricated free-text value is caught by answer_correctness, not grounding. Numeric support assumes the aggregate is a mean.
 - Numeric tolerance is absolute; number extraction requires the unit right after the number.
+- Contradiction: self-reports are synthetic single words with hand-labelled directions; the agent's good/poor rule (HRV and RHR vs a 7-day mean) is a fixture convention, not a physiological standard. Conflict/dismissal/verdict detection is lexical (misses e.g. "your body says otherwise", sarcasm, conflicts stated across sentences without conflict words); a verdict inside an attributed clause ("the data shows you are recovered") is treated as attributed.
 - Missing-data: assumes one expected observation per day; coverage parsing is lexical (misses e.g. "a day short", "except Saturday"); dates recognised only as ISO or "Month D"; a value for a missing day stated in a different sentence from the date is not detected.
 - Two question intents.
 
@@ -379,6 +397,17 @@ Trade-offs: per-evaluator denominators differ; the report prints them explicitly
 Affected components: evaluation/__init__.py, evaluation/missing_data.py, CLI report.
 Scope impact: Minor
 
+### ADR-010 — AssessmentCase and a synthetic self-report layer
+
+Status: Implemented
+Date: 2026-10-02
+Original approach: contradiction handling planned on MMASH questionnaires (§18).
+New approach: (user decision) synthetic self-report records first, MMASH later. Self-reports are ordinary `Record`s (`kind="subjective"`, `name="energy_report"`, string value). New case kind `AssessmentCase` for open "how is my recovery?" questions, hand-labelled with: the wearable record ids and self-report ids the assessment rests on, `wearable_indicates` / `self_report_indicates` ∈ {good, poor} (or `self_report_indicates=None` when no knowable report exists), and `relevant_names` for grounding. Conflict = the two labelled directions differ. A new `contradiction_handling` evaluator applies only to AssessmentCase; answer_correctness and missing_data are not applicable to it (ADR-009); temporal and grounding apply unchanged in spirit (grounding uses `relevant_names`, has no claim-support check for assessments).
+Reason: contradiction needs subjective data the current fixtures lack; a synthetic layer keeps labels hand-verifiable and avoids premature dataset work.
+Trade-offs: directions are hand labels on synthetic data, not clinical judgements; the evaluator checks how a conflict is *represented*, never which source is "right".
+Affected components: scenarios.py, agent.py, evaluation/{text,grounding,answer,contradiction (new)}.py, CLI, tests.
+Scope impact: Minor
+
 ## 23. Change Log
 
 ### 2026-10-02 — Phase 0 + Phase 1 vertical slice
@@ -429,6 +458,16 @@ Change: new `evaluation/missing_data.py` (4 checks, `MISSING_DATA_FAILURE`); `co
 Reason: user-requested fourth dimension; representing completeness accurately is separate from temporal, grounding and answer correctness.
 Impact: Observed runs (fixture + PHIA, 9 cases; missing_data over the 5 numeric cases), order temporal / grounding / answer / missing_data: reference 9/9, 9/9, 9/9, 5/5; `input_order` 9/9, 8/9, 8/9, 5/5; `no_as_of` 6/9, 7/9, 6/9, 4/5; `no_window` 9/9, 4/9, 4/9, 2/5; `silent_gaps` 9/9, 9/9, 9/9, 2/5; `impute` 9/9, 7/9, 7/9, 2/5. 84 tests pass; without PHIA data 80 pass + 4 skipped. During development shell heredocs turned regex word boundaries into backspace characters twice; fixed, and a control-character scan is now part of the pre-commit routine.
 Files affected: agent.py, scenarios.py, phia.py, __main__.py, evaluation/{__init__,text,answer,grounding,missing_data (new)}.py, tests/{test_missing_data (new),test_suite,test_phia}.py, README.md, PROJECT_CONTEXT.md.
+Scope impact: Minor
+
+### 2026-10-02 — Contradiction-handling evaluator (synthetic self-report layer)
+
+Status: Implemented
+Original plan: contradiction handling on MMASH questionnaires.
+Change (user-directed: synthetic first, no MMASH yet): ADR-010 `AssessmentCase`; 6 recovery cases with synthetic `energy_report` records; `evaluation/contradiction.py` (5 checks, `CONTRADICTION_FAILURE`); `text.contradiction_claims`; `, so` clause boundary; grounding v0.2.0 (assessment required/relevant/window, no support check); answer v0.2.2 (N/A for assessments); missing_data v0.1.1 (text change only); agent v0.4.0 recovery intent + `ignore_self_report`, `dismiss_self_report`; scenarios v0.5.0.
+Reason: fifth Phase 2 dimension.
+Impact: Observed runs (fixture + PHIA, 15 cases), order temporal / grounding / answer / missing_data / contradiction: reference 15/15, 15/15, 9/9, 5/5, 6/6; `input_order` 15/15, 14/15, 8/9, 5/5, 6/6; `no_as_of` 11/15, 13/15, 6/9, 4/5, 5/6; `no_window` 15/15, 9/15, 4/9, 2/5, 5/6; `silent_gaps` 15/15, 15/15, 9/9, 2/5, 6/6; `impute` 15/15, 13/15, 7/9, 2/5, 6/6; `ignore_self_report` 15/15, 11/15, 9/9, 5/5, 4/6; `dismiss_self_report` 15/15, 15/15, 9/9, 5/5, 4/6. Earlier dimensions unchanged on earlier cases. 118 tests pass; without PHIA data 114 pass + 4 skipped. A test exposed whole-clause negation swallowing "…conflict, so don't ignore how you feel"; fixed with the `, so` boundary rather than rewording the test.
+Files affected: agent.py, scenarios.py, __main__.py, evaluation/{__init__,text,grounding,answer,missing_data,contradiction (new)}.py, tests/{test_contradiction (new),test_suite}.py, README.md, PROJECT_CONTEXT.md.
 Scope impact: Minor
 
 ## 24. Rules for Future Changes

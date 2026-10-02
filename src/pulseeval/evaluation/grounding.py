@@ -3,10 +3,13 @@
 Checks the agent's `evidence_used` against the case and the timeline:
   cited_records_exist          - no fabricated record ids
   cites_required_records       - nothing required is missing
-  cited_records_relevant       - cited records are the asked-about field (and unit)
+  cited_records_relevant       - cited records are the asked-about field(s) (and unit)
   cited_records_within_window  - cited events fall in the question's valid window
-  evidence_supports_claim      - the asserted value follows from the cited records
+  evidence_supports_claim      - (state, numeric) the asserted value follows from the records
   no_contradicting_evidence    - (state) no cited record silently contradicts the claim
+For assessments (ADR-010) the required records are the labelled wearable + self-report ids
+and relevance uses the case's `relevant_names`; how a wearable/self-report conflict is
+represented is contradiction handling, not grounding.
 
 Knowability at as_of (late-synced / future data) is temporal consistency, and whether the
 claim is *right* is answer correctness; this evaluator only asks whether the claim is
@@ -21,16 +24,29 @@ from datetime import datetime
 from pulseeval.agent import AgentTrace
 from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureType, build_result
 from pulseeval.evaluation.text import affirmed_number, asserts, value_mentions
-from pulseeval.scenarios import Case, NumericCase
+from pulseeval.scenarios import AssessmentCase, Case, NumericCase, StateCase
 from pulseeval.timeline import Record
 
-GROUNDING_EVALUATOR_VERSION = "0.1.1"
+GROUNDING_EVALUATOR_VERSION = "0.2.0"
 _EPS = 1e-9
 _G = FailureType.GROUNDING_FAILURE
 
 
 def _window(case: Case) -> tuple[datetime | None, datetime]:
-    return (case.window_start if isinstance(case, NumericCase) else None), case.as_of
+    start = case.window_start if isinstance(case, NumericCase | AssessmentCase) else None
+    return start, case.as_of
+
+
+def _required(case: Case) -> list[str]:
+    if isinstance(case, NumericCase):
+        return case.expected_record_ids
+    if isinstance(case, AssessmentCase):
+        return case.wearable_record_ids + case.self_report_record_ids
+    return [case.expected_record_id]
+
+
+def _relevant_names(case: Case) -> list[str]:
+    return case.relevant_names if isinstance(case, AssessmentCase) else [case.target_name]
 
 
 def _support_spec(case: Case, trace: AgentTrace, relevant: list[Record]) -> CheckSpec:
@@ -83,13 +99,13 @@ def evaluate_evidence_grounding(case: Case, trace: AgentTrace) -> EvaluationResu
     missing_ids = [rid for rid, r in zip(cited_ids, cited) if r is None]
     existing = [r for r in cited if r is not None]
 
-    required = ([case.expected_record_id] if not isinstance(case, NumericCase)
-                else case.expected_record_ids)
+    required = _required(case)
     not_cited = [rid for rid in required if rid not in cited_ids]
 
     unit = case.unit if isinstance(case, NumericCase) else None
+    names = _relevant_names(case)
     irrelevant = [r.record_id for r in existing
-                  if r.name != case.target_name or (unit is not None and r.unit != unit)]
+                  if r.name not in names or (unit is not None and r.unit != unit)]
     relevant = [r for r in existing if r.record_id not in irrelevant]
 
     start, end = _window(case)
@@ -108,7 +124,7 @@ def evaluate_evidence_grounding(case: Case, trace: AgentTrace) -> EvaluationResu
                                    else "All required records cited."), evidence=not_cited),
         CheckSpec(name="cited_records_relevant", failure_type=_G, passed=not irrelevant,
                   severity="medium",
-                  expected_behavior=(f"Cited records are '{case.target_name}'"
+                  expected_behavior=(f"Cited records are {names}"
                                      + (f" in {unit}." if unit else ".")),
                   actual_behavior=(f"Irrelevant records cited: {irrelevant}." if irrelevant
                                    else "All cited records are relevant."), evidence=irrelevant),
@@ -117,9 +133,10 @@ def evaluate_evidence_grounding(case: Case, trace: AgentTrace) -> EvaluationResu
                   actual_behavior=(f"Cited outside the window: {outside}." if outside
                                    else "All cited events are within the window."),
                   evidence=outside),
-        _support_spec(case, trace, relevant),
     ]
-    if not isinstance(case, NumericCase):
+    if not isinstance(case, AssessmentCase):  # an assessment has no single value to support
+        specs.append(_support_spec(case, trace, relevant))
+    if isinstance(case, StateCase):
         specs.append(_contradiction_spec(trace, relevant))
     return build_result(case.case_id, "evidence_grounding", GROUNDING_EVALUATOR_VERSION,
                         trace, specs)
