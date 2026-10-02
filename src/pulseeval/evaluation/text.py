@@ -9,7 +9,10 @@ negated > past > hedged > affirmed (first matching wins).
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Literal
+
+from pydantic import BaseModel
 
 Polarity = Literal["negated", "past", "hedged", "affirmed"]
 
@@ -23,11 +26,11 @@ _HEDGE = {"maybe", "might", "perhaps", "possibly", "probably", "unclear", "unsur
           "may", "could", "seems", "likely"}
 
 # Contrast cues start a new clause so they only scope over what follows them.
-# Negation starts a new clause only when contrastive (", not X" / "and not X");
-# otherwise it negates its whole clause ("Weight training is not your goal").
+# Negation starts a new clause only when contrastive (", not X" / "and not X" /
+# ", without X"); otherwise it negates its whole clause ("Weight training is not your goal").
 _CLAUSE_START = re.compile(
     r"(?=\b(?:but|however|although|whereas|though|instead of|rather than)\b)"
-    r"|(?:,|\band\b)\s*(?=(?:not|never|no longer)\b)",
+    r"|(?:,|\band\b)\s*(?=(?:not|never|no longer|without)\b)",
     re.IGNORECASE,
 )
 # "switched from X to Y" -> X is past, Y is current.
@@ -94,3 +97,99 @@ def affirmed_number(answer: str, unit: str) -> tuple[float | None, list[float]]:
     affirmed = sorted({v for v, polarity in numbers_with_unit(answer, unit)
                        if polarity == "affirmed"})
     return (affirmed[0] if len(affirmed) == 1 else None), affirmed
+
+
+# --- coverage claims (missing-data handling) ----------------------------------
+
+_NUMBER_WORDS = {w: str(i) for i, w in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+    "fifteen sixteen seventeen eighteen nineteen twenty".split())}
+_N = r"(\d+)"
+_DAYISH = r"(?:days?|readings?|observations?|measurements?|nights?)"
+# Applied in order; each match is blanked so later patterns cannot re-read it.
+_COVERAGE_PATTERNS = [
+    ("missing_of", rf"{_N}\s*(?:of|/|out of)\s*{_N}\s*{_DAYISH}\s+(?:were\s+|are\s+|is\s+|was\s+)?"
+                   r"(?:missing|without data|had no data|with no data|lacked data)"),
+    ("available_of", rf"{_N}\s*(?:of|/|out of)\s*(?:the\s+)?{_N}\s*{_DAYISH}"),
+    ("all", rf"\ball\s+{_N}\s+{_DAYISH}"),
+    ("available", rf"\bbased on\s+(?:the\s+|only\s+)?{_N}\s+(?:available\s+|recorded\s+)?{_DAYISH}"),
+    ("missing", rf"{_N}\s+{_DAYISH}\s+(?:were\s+|was\s+|is\s+|are\s+)?(?:missing|without data)"),
+    ("missing", rf"\bmissing\s+{_N}\s+{_DAYISH}"),
+    ("available", rf"{_N}\s+(?:days?\s+(?:with|had|of)\s+data|readings?|observations?|measurements?)"),
+]
+# Completeness phrases that carry their own negation ("no missing days") vs. plain ones.
+_COMPLETE_NEGATIVE = re.compile(r"\b(?:no|without|zero)\s+(?:missing|gaps?)\b|"
+                                r"\bnothing\s+(?:is\s+|was\s+)?missing\b|\bnot\s+missing\b")
+_COMPLETE_PLAIN = re.compile(r"\bcomplete\b|\bevery\s+day\b|\bfull\s+coverage\b")
+_GAP = re.compile(r"\b(?:missing|gaps?|no data|incomplete|partial|unavailable|not recorded)\b")
+_IMPUTE = re.compile(r"\b(?:imput\w*|interpolat\w*|extrapolat\w*|filled|fill(?:ed)?\s+in|"
+                     r"carried forward|carry(?:ing)? forward|estimated)\b")
+
+
+class CoverageClaims(BaseModel):
+    """What an answer says about how much of the requested window had data."""
+
+    available: list[int] = []  # "13 of 14 days", "based on 13 days", "13 readings", "all 14 days"
+    total: list[int] = []  # the "of N" in "13 of 14"
+    missing: list[int] = []  # "1 day missing", "1 of 14 days missing"
+    completeness_claimed: bool = False  # "all 14 days", "no missing days", "complete"
+    gap_acknowledged: bool = False  # "missing", "gap", "incomplete", ... (not negated)
+    imputation_claimed: bool = False  # "imputed", "interpolated", "estimated", ... (not negated)
+
+
+def coverage_claims(answer: str) -> CoverageClaims:
+    """Deterministic, lexical. Counts are read regardless of clause polarity; completeness,
+    gap and imputation wording are polarity-aware ("did not impute" is not an imputation)."""
+    claims = CoverageClaims()
+    for clause in clauses(answer):
+        text = re.sub(r"\b(" + "|".join(_NUMBER_WORDS) + r")\b",
+                      lambda m: _NUMBER_WORDS[m[1]], clause.lower())
+        text = re.sub(r"\b(?:a|one)\s+day\s+(?=(?:is\s+|was\s+)?missing)", "1 day ", text)
+        for kind, pattern in _COVERAGE_PATTERNS:
+            for m in re.finditer(pattern, text):
+                nums = [int(g) for g in m.groups()]
+                if kind == "missing_of":
+                    claims.missing.append(nums[0]); claims.total.append(nums[1])
+                elif kind == "available_of":
+                    claims.available.append(nums[0]); claims.total.append(nums[1])
+                elif kind == "all":
+                    claims.available.append(nums[0]); claims.total.append(nums[0])
+                    claims.completeness_claimed = True
+                else:
+                    getattr(claims, kind).append(nums[0])
+                if kind in ("missing_of", "missing"):
+                    claims.gap_acknowledged = True
+            text = re.sub(pattern, " ", text)
+
+        polarity = _polarity(clause)
+        if _COMPLETE_NEGATIVE.search(text):
+            claims.completeness_claimed = True
+            text = _COMPLETE_NEGATIVE.sub(" ", text)
+        if _COMPLETE_PLAIN.search(text):
+            if polarity == "negated":  # "the data is not complete"
+                claims.gap_acknowledged = True
+            else:
+                claims.completeness_claimed = True
+        if polarity != "negated" and _GAP.search(text):
+            claims.gap_acknowledged = True
+        if polarity in ("affirmed", "past") and _IMPUTE.search(text):
+            claims.imputation_claimed = True
+    return claims
+
+
+def dated_values(answer: str, unit: str, days: list[date]) -> list[date]:
+    """Days in `days` that the answer gives an affirmed value (number + unit) for,
+    e.g. "On 2023-10-21 your resting heart rate was 60 bpm"."""
+    found = []
+    for clause in clauses(answer):
+        lower = clause.lower()
+        if _polarity(clause) != "affirmed" or _GAP.search(lower):
+            continue
+        if not re.search(rf"\d\s*{re.escape(unit)}\b", lower):
+            continue
+        for day in days:
+            names = (day.isoformat(), f"{day:%B} {day.day}".lower(), f"{day:%b} {day.day}".lower(),
+                     f"{day:%b}. {day.day}".lower())
+            if any(re.search(rf"\b{re.escape(n)}\b", lower) for n in names):
+                found.append(day)
+    return found

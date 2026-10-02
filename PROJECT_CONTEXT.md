@@ -7,19 +7,19 @@ Phase: 2 — Core Evaluation
 Status: IN PROGRESS (stopped for review)
 
 Last completed:
-PHIA mapping investigation (persona↔user supported; labels not reproducible → not ground truth); evaluators split into temporal / evidence grounding / answer; evidence-grounding evaluator; minimal PHIA adapter with 2 recomputed cases. 56 tests pass (53 without local PHIA data).
+Missing-data handling evaluator (4th dimension, ADR-009) with synthetic gap cases and PHIA 465 14-day regression; agent v0.3.0 reports coverage. 84 tests pass (80 + 4 skipped without local PHIA data).
 
 Currently working on:
 Nothing — awaiting review.
 
 Next task:
-Missing-data handling evaluator (Phase 2), using PHIA user 465's natural gaps plus fixture cases.
+Proposed: contradiction handling (wearable vs self-report) — remaining Phase 2 dimensions are contradiction, causal restraint, uncertainty/abstention. Not started (user asked to stop here).
 
 Blocked by:
 None.
 
 Last architecture change:
-ADR-007 (PHIA labels not ground truth; minimal adapter), ADR-008 (one evaluator per dimension; evidence grounding) — Implemented.
+ADR-009 (evaluators may be not applicable to a case kind) — Implemented.
 
 Last context update:
 2026-10-02
@@ -48,16 +48,17 @@ Not a health chatbot, diagnosis/treatment/clinical-decision system, generic RAG 
 | Component | State |
 |---|---|
 | Timeline schema (`timeline.py`) | Implemented, tested |
-| SUT agent v0.2.0 (`agent.py`): intents = current training goal, N-day mean resting HR | Implemented, tested |
+| SUT agent v0.3.0 (`agent.py`): intents = current training goal, N-day mean resting HR (states coverage) | Implemented, tested |
 | Agent trace schema | Implemented |
 | Temporal-consistency evaluator v0.3.0 (knowability only) | Implemented, tested |
-| Evidence-grounding evaluator v0.1.0 | Implemented, tested |
-| Answer-correctness evaluator v0.2.0 (state + numeric) | Implemented, tested |
-| Scenarios v0.3.0: 4 state + 2 numeric fixture cases, each with `provenance` | Implemented |
+| Evidence-grounding evaluator v0.1.1 | Implemented, tested |
+| Answer-correctness evaluator v0.2.1 (state + numeric) | Implemented, tested |
+| Missing-data handling evaluator v0.1.0 (numeric cases only) | Implemented, tested |
+| Scenarios v0.4.0: 4 state + 3 numeric fixture cases, each with `provenance` | Implemented |
 | PHIA adapter (`phia.py`): 1 user, 2 numeric cases, PulseEval-recomputed values | Implemented, tested (skips without local data) |
 | CLI report (`python -m pulseeval [--phia DIR]`) | Implemented |
 | MMASH | Verified (§8); not downloaded |
-| Contradiction/causal/missing-data/uncertainty evaluators, memory lifecycle, LLM agent, UI | Not started |
+| Contradiction/causal/uncertainty evaluators, memory lifecycle, LLM agent, UI | Not started |
 
 ## 6. Current Architecture
 
@@ -66,11 +67,12 @@ Case = StateCase | NumericCase   (fixture: scenarios.py | PHIA-derived: phia.py)
   timeline + question + as_of + target_name + expectation + provenance
   → HealthAgent.answer()          # SUT; tools: retrieve_context, latest_value, mean_value
   → AgentTrace                    # structured; every tool call recorded
-  → run_suite: every case × every evaluator
+  → run_suite: every case × every applicable evaluator (None = not applicable, ADR-009)
       temporal_consistency   — was anything retrieved/cited unknowable at as_of?
       evidence_grounding     — is the cited evidence the right evidence for the claim?
       answer_correctness     — does the final text assert the right thing?
-  → EvaluationResult per (case, evaluator): checks + typed Failures
+      missing_data           — (numeric only) is window coverage represented accurately?
+  → EvaluationResult per (case, applicable evaluator): checks + typed Failures
   → CLI text report / JSON
 ```
 
@@ -94,8 +96,10 @@ src/pulseeval/
     temporal.py        # temporal consistency (knowability)
     grounding.py       # evidence grounding
     answer.py          # answer correctness (state + numeric)
+    missing_data.py    # missing-data handling (coverage representation; numeric only)
 tests/
-  test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_suite.py  test_phia.py
+  test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_missing_data.py
+  test_suite.py  test_phia.py
 data/raw/            # git-ignored; local copies only (data/raw/phia/: 14 files, ~700 KB)
 ```
 
@@ -160,7 +164,7 @@ Verified 2026-10-02 by reading official pages and the PHIA repository's code/dat
 
 Case base: `case_id, description, timeline, question, as_of, target_name, provenance`.
 `StateCase`: + `expected_record_id, expected_value: str`. Valid evidence window: event_time ≤ as_of.
-`NumericCase`: + `window_start, expected_value: float, unit, tolerance (absolute), expected_record_ids`. Aggregate is the mean over [window_start, as_of].
+`NumericCase`: + `window_start, expected_value: float, unit, tolerance (absolute), expected_record_ids, expected_observations`. Aggregate is the mean over [window_start, as_of]. `expected_observations` = daily observations a complete window would contain (hand-labelled); available = `len(expected_record_ids)` (knowable at as_of); missing days = window days without an expected record.
 
 `AgentTrace`: `agent_version, agent_config, query, member_id, as_of, time_window, retrieved_context, tools_called[ToolCall{name, inputs, outputs}], memories_used, evidence_used, final_answer, uncertainty, abstention`.
 
@@ -169,23 +173,24 @@ Case base: `case_id, description, timeline, question, as_of, target_name, proven
 
 ## 10. System Under Test
 
-`HealthAgent(ordering, respect_as_of, respect_window)` v0.2.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
-- Reference config: chronological, respects as_of, respects window.
-- Fault-injected configs: `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history).
-- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]). Anything else → explicit abstention.
+`HealthAgent(ordering, respect_as_of, respect_window, report_coverage, impute_missing)` v0.3.0 — deterministic, rule-based (no LLM; ADR-002, reaffirmed by user).
+- Reference config: chronological, respects as_of, respects window, reports coverage, never imputes.
+- Fault-injected configs (CLI names): `input_order` (assumes sorted input), `no_as_of` (retrieves unknowable records), `no_window` (aggregates all history), `silent_gaps` (omits coverage statement), `impute` (carries the previous reading into missing days, recorded as a `carry_forward` tool call, and claims full coverage).
+- Intents: "current training goal"; "average resting heart rate over the last N days" (window = [as_of − N days, as_of]; answer states "(k of N days had data)" or "(all N days had data)"). Anything else → explicit abstention.
 
 ## 11. Evaluation Engine
 
-Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Three independent dimensions (ADR-008), each its own evaluator, all run on every case.
+Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSION`). Four independent dimensions (ADR-008), each its own evaluator. An evaluator returns `None` when its dimension does not apply to a case kind (ADR-009); pass rates are over applicable cases only.
 
 ## 12. Evaluation Dimensions
 
 | Dimension | Status |
 |---|---|
 | Temporal consistency | **Implemented** v0.3.0 |
-| Evidence grounding | **Implemented** v0.1.0 |
-| Answer correctness (numerical + current-state) | **Implemented** v0.2.0 |
-| Contradiction handling (wearable vs self-report), missing-data, causal restraint, uncertainty/abstention | Planned (Phase 2) |
+| Evidence grounding | **Implemented** v0.1.1 |
+| Answer correctness (numerical + current-state) | **Implemented** v0.2.1 |
+| Missing-data handling | **Implemented** v0.1.0 (numeric cases) |
+| Contradiction handling (wearable vs self-report), causal restraint, uncertainty/abstention | Planned (Phase 2) |
 | Memory validity | Planned (Phase 3) |
 | Personalization, tool-call correctness | Planned (Phase 2–4) |
 
@@ -204,17 +209,26 @@ Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSIO
 - State (`TEMPORAL_FAILURE`): `answer_asserts_current_value`; `answer_does_not_assert_other_value`.
 - Numeric (`NUMERICAL_FAILURE`): `value_extracted` (exactly one distinct affirmed number + unit); `value_within_tolerance` (absolute + 1e-9 epsilon).
 
-**Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues and contrastive negation only; "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
+**missing_data** (NumericCase only) — `MISSING_DATA_FAILURE`. Missing data itself is never a failure; misrepresenting coverage is. N = expected observations, A = available (knowable) observations, M = N − A.
+- `gap_acknowledged` — if M > 0, the answer says the window is incomplete: a non-negated gap word (missing, gap, incomplete, partial, no data, …), "A of N days" with A < N, "based on A days", or "M days missing". Not required when M = 0.
+- `no_false_completeness_claim` — if M > 0: no "all N days", "no missing days", "complete", or available ≥ N claim.
+- `no_false_imputation` — no claim of more than A observations; no affirmed imputation wording (imputed, interpolated, estimated, filled in, carried forward); no affirmed value-with-unit attributed to a missing date (ISO or month-name date).
+- `coverage_counts_accurate` — any stated counts equal A / M / N; no gap claimed when the window is complete.
+"Available" means knowable at as_of, so a reading that exists in the source but synced after as_of counts as missing for coverage.
 
-**Separation examples (observed):** `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
+**Coverage parsing (`text.coverage_claims`):** lexical patterns applied in order with matched spans removed: "M of N days missing", "A of N days", "all N days", "based on (the) A (available) days", "M days missing", "A readings / days with data"; number words zero–twenty; counts are read regardless of clause polarity; completeness/gap/imputation wording is polarity-aware ("without imputing" is not an imputation claim).
+
+**Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues and contrastive negation only (`, not` / `and not` / `, without` — `without` added in answer v0.2.1 / grounding v0.1.1); "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
+
+**Separation examples (observed):** `silent_gaps` on PHIA 465 14-day (13/14) and on the fixture gap cases → only missing_data fails (correct, grounded, knowable answer presented as complete). `impute` on `rhr_mean_7d_late_sync` → only missing_data fails (the carried-forward value leaves the mean unchanged at 55.0). `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
 
 ## 13. Adversarial Test Cases
 
-Fixture suite (as_of 2026-04-01): `goal_update_chronological`, `goal_update_reversed`, `goal_future_record`, `goal_late_arriving_record` (expected "weight training", g2); `rhr_mean_7d` (384/7 ≈ 54.857 bpm, tol 0.1); `rhr_mean_7d_late_sync` (330/6 = 55.0; leaking gives 56.0).
+Fixture suite (as_of 2026-04-01): `goal_update_chronological`, `goal_update_reversed`, `goal_future_record`, `goal_late_arriving_record` (expected "weight training", g2); `rhr_mean_7d` (384/7 ≈ 54.857 bpm, tol 0.1, 7/7); `rhr_mean_7d_late_sync` (330/6 = 55.0, 6/7 knowable; leaking gives 56.0); `rhr_mean_7d_gap` (03-28 never recorded: 331/6 ≈ 55.167, 6/7).
 
-PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.634286, 7 readings), `phia465_rhr_mean_14d` (59.649231, 13 readings — 2023-10-21 missing in source, not imputed).
+PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.634286, 7/7), `phia465_rhr_mean_14d` (59.649231, 13/14 — 2023-10-21 missing in source, never imputed; missing-data regression case).
 
-Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed).
+Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage).
 
 Planned: stale memory, unsupported causality, contradictory signals (wearable vs self-report), missing context, counterfactual.
 
@@ -224,13 +238,13 @@ Per evaluator: pass rate = passed cases / evaluated cases; failures by type and 
 
 ## 15. Development Phases
 
-0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅; remaining: contradiction, missing-data, causal restraint, uncertainty/abstention) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
+0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅, missing-data ✅; remaining: contradiction, causal restraint, uncertainty/abstention) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
 
 ## 16. Completed Work
 
 - Phase 0: empty directory audited; Python 3.11, pydantic 2.9, pytest; no API key.
 - Phase 1: vertical slice.
-- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter.
+- Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling.
 - Git: `origin` = https://github.com/Adhithyan245/PulseEval.git; history rewritten 2026-10-02 to remove Claude co-author trailers (user decision); commits use the user's identity only.
 
 ## 17. In-Progress Work
@@ -239,8 +253,8 @@ None (stopped for review).
 
 ## 18. Planned Work
 
-1. Missing-data handling evaluator (agent must report/acknowledge gaps, e.g. "13 of 14 days"; no imputation claims) — PHIA user 465's missing days give a natural case.
-2. Contradiction handling (wearable vs self-report), causal restraint, uncertainty/abstention evaluators.
+1. Contradiction handling (wearable vs self-report) — needs subjective-report records (synthetic overlay; MMASH questionnaires are a candidate source).
+2. Causal restraint, uncertainty/abstention evaluators.
 
 ## 19. Deferred Work
 
@@ -254,6 +268,7 @@ LLM-backed agent and LLM judge (until the deterministic layer is trusted — use
 - Answer-text analysis is lexical English heuristics: misses paraphrases ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation; errs toward failing answers it cannot parse.
 - Grounding `evidence_supports_claim` (state) only recognises claims of values that exist in the timeline; a fabricated free-text value is caught by answer_correctness, not grounding. Numeric support assumes the aggregate is a mean.
 - Numeric tolerance is absolute; number extraction requires the unit right after the number.
+- Missing-data: assumes one expected observation per day; coverage parsing is lexical (misses e.g. "a day short", "except Saturday"); dates recognised only as ISO or "Month D"; a value for a missing day stated in a different sentence from the date is not detected.
 - Two question intents.
 
 ## 21. Research References
@@ -353,6 +368,17 @@ Trade-offs: three results per case; small duplication of claim extraction betwee
 Affected components: evaluation/*, scenarios.py, CLI, tests.
 Scope impact: Moderate
 
+### ADR-009 — Evaluators may be not applicable to a case kind
+
+Status: Implemented
+Date: 2026-10-02
+Original approach: every evaluator runs on every case and always returns a result (ADR-008).
+New approach: an evaluator returns `None` when its dimension does not apply to the case (missing-data handling applies only to `NumericCase`, whose question requests a window of expected daily observations). `run_suite` drops `None`; pass rates are over applicable cases only.
+Reason: an always-passing result with no checks would silently inflate pass rates.
+Trade-offs: per-evaluator denominators differ; the report prints them explicitly.
+Affected components: evaluation/__init__.py, evaluation/missing_data.py, CLI report.
+Scope impact: Minor
+
 ## 23. Change Log
 
 ### 2026-10-02 — Phase 0 + Phase 1 vertical slice
@@ -395,6 +421,16 @@ Impact: Observed runs (fixture + PHIA, 8 cases): reference 8/8 on all three; `in
 Files affected: scenarios.py, phia.py (new), __main__.py, evaluation/{__init__,schemas,text,temporal,grounding (new),answer (renamed from numerical)}.py, tests/{test_temporal,test_answer (renamed from test_numerical),test_grounding,test_suite,test_phia}.py, README.md, PROJECT_CONTEXT.md.
 Scope impact: Moderate
 
+### 2026-10-02 — Missing-data handling evaluator
+
+Status: Implemented
+Original plan: missing-data handling as a planned Phase 2 dimension.
+Change: new `evaluation/missing_data.py` (4 checks, `MISSING_DATA_FAILURE`); `coverage_claims` and `dated_values` in `text.py`; ", without" added as a contrastive clause boundary (answer v0.2.1, grounding v0.1.1); `NumericCase.expected_observations`; fixture case `rhr_mean_7d_gap`; PHIA cases expose `expected_observations` (no duplicated loading); agent v0.3.0 states coverage, new faults `silent_gaps`, `impute` (with `carry_forward` tool call in the trace); evaluators may return None (ADR-009); scenarios v0.4.0.
+Reason: user-requested fourth dimension; representing completeness accurately is separate from temporal, grounding and answer correctness.
+Impact: Observed runs (fixture + PHIA, 9 cases; missing_data over the 5 numeric cases), order temporal / grounding / answer / missing_data: reference 9/9, 9/9, 9/9, 5/5; `input_order` 9/9, 8/9, 8/9, 5/5; `no_as_of` 6/9, 7/9, 6/9, 4/5; `no_window` 9/9, 4/9, 4/9, 2/5; `silent_gaps` 9/9, 9/9, 9/9, 2/5; `impute` 9/9, 7/9, 7/9, 2/5. 84 tests pass; without PHIA data 80 pass + 4 skipped. During development shell heredocs turned regex word boundaries into backspace characters twice; fixed, and a control-character scan is now part of the pre-commit routine.
+Files affected: agent.py, scenarios.py, phia.py, __main__.py, evaluation/{__init__,text,answer,grounding,missing_data (new)}.py, tests/{test_missing_data (new),test_suite,test_phia}.py, README.md, PROJECT_CONTEXT.md.
+Scope impact: Minor
+
 ## 24. Rules for Future Changes
 
 - Read CURRENT STATUS first; keep it true.
@@ -405,3 +441,4 @@ Scope impact: Moderate
 - No LLM agent/judge and no UI without explicit user approval.
 - Never add Claude/Anthropic co-author lines to commits; user's git identity only.
 - Never label a value "ground truth" without recorded provenance (`Case.provenance`).
+- Write regex-bearing code with the Edit/Write tools, not shell heredocs (backslash escapes were mangled); scan for control characters before committing.

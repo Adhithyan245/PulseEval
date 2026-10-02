@@ -37,4 +37,16 @@ def test_reference_agent_passes_and_window_fault_is_detected():
     failed = {(r.case_id, r.evaluator) for r in run_suite(HealthAgent(respect_window=False), cases)
               if not r.passed}
     assert failed == {(c.case_id, e) for c in cases
-                      for e in ("evidence_grounding", "answer_correctness")}
+                      for e in ("evidence_grounding", "answer_correctness")} | {
+        ("phia465_rhr_mean_14d", "missing_data")}  # all-history agent claims "all 14 days"
+
+
+def test_real_gap_regression_silent_agent_fails_only_missing_data():
+    """PHIA 465, 14-day window, 2023-10-21 absent in the source: a correct, grounded,
+    temporally valid answer that hides the gap fails missing-data handling only."""
+    [_, case] = phia_cases(DATA)
+    results = {r.evaluator: r for r in run_suite(HealthAgent(report_coverage=False), [case])}
+    assert {e for e, r in results.items() if not r.passed} == {"missing_data"}
+    failed = {c.name for c in results["missing_data"].checks if not c.passed}
+    assert failed == {"gap_acknowledged"}
+    assert "2023-10-21" in results["missing_data"].checks[0].explanation

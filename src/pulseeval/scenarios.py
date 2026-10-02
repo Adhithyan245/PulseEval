@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from pulseeval.timeline import MemberTimeline, Record
 
-SCENARIOS_VERSION = "0.3.0"
+SCENARIOS_VERSION = "0.4.0"
 
 
 class _CaseBase(BaseModel):
@@ -35,7 +35,7 @@ class StateCase(_CaseBase):
 
 
 class NumericCase(_CaseBase):
-    """Mean of `target_name` over [window_start, as_of]."""
+    """Mean of `target_name` over [window_start, as_of], one expected observation per day."""
 
     kind: Literal["numeric"] = "numeric"
     window_start: datetime
@@ -43,6 +43,7 @@ class NumericCase(_CaseBase):
     unit: str
     tolerance: float  # absolute, in `unit`
     expected_record_ids: list[str]  # readings the computation should use
+    expected_observations: int  # daily observations a complete window would contain
 
 
 Case = StateCase | NumericCase
@@ -97,12 +98,14 @@ _RHR_ALL_IDS = [r.record_id for r in _RHR_WEEK]
 
 def _rhr_case(case_id: str, description: str, records: list[Record],
               expected: float, ids: list[str]) -> NumericCase:
+    # Coverage = len(ids) of 7 knowable daily readings; missing days are never filled.
     return NumericCase(
         case_id=case_id, description=description,
         timeline=MemberTimeline(member_id="M001", records=_BASE + records),
         question=RHR_QUESTION, as_of=AS_OF, target_name="resting_hr",
         provenance=FIXTURE_PROVENANCE, window_start=AS_OF - timedelta(days=7),
         expected_value=expected, unit="bpm", tolerance=0.1, expected_record_ids=ids,
+        expected_observations=7,
     )
 
 
@@ -131,4 +134,9 @@ CASES: list[Case] = [
               _RHR_WEEK[:-1] + [_r("r0331", "physiological", "resting_hr", 62.0,
                                    "2026-03-31T07:00", recorded="2026-04-03", unit="bpm")],
               expected=55.0, ids=_RHR_ALL_IDS[:-1]),
+    # 03-28 reading never recorded: (55+54+56+57+55+54)/6 = 331/6 = 55.1667, 6 of 7 days.
+    _rhr_case("rhr_mean_7d_gap",
+              "One day in the window has no reading at all; coverage is 6 of 7 days.",
+              [r for r in _RHR_WEEK if r.record_id != "r0328"],
+              expected=55.167, ids=[i for i in _RHR_ALL_IDS if i != "r0328"]),
 ]

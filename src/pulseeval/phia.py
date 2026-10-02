@@ -54,8 +54,8 @@ def load_timeline(data_dir: str | Path, user: str) -> MemberTimeline:
 _PROVENANCE = (
     "PulseEval recomputation from PHIA synthetic_wearable_users/summary_df_465.csv "
     "(CC BY-NC 4.0): mean of resting_heart_rate over dates [2023-10-31 - (N-1), 2023-10-31], "
-    "empty cells skipped. Not a PHIA label (PHIA's label for the same template, {phia}, "
-    "is not reproducible from the published CSV)."
+    "empty cells skipped, days without a row left missing (never imputed). Not a PHIA label "
+    "(PHIA's label for the same template, {phia}, is not reproducible from the published CSV)."
 )
 _AS_OF = datetime(2023, 11, 1)  # day after the last summary row
 
@@ -75,6 +75,7 @@ def phia_cases(data_dir: str | Path) -> list[NumericCase]:
             window_start=datetime.fromisoformat(dates[0]),
             expected_value=expected, unit="bpm", tolerance=0.05,  # answers reported to 1 dp
             expected_record_ids=[record_id("465", "resting_hr", d) for d in dates],
+            expected_observations=days,  # one daily summary row expected per day
         )
 
     oct_ = lambda days: [f"2023-10-{d:02d}" for d in days]  # noqa: E731

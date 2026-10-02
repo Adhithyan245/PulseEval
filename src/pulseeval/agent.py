@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from pulseeval.timeline import MemberTimeline, Record
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.3.0"
 
 Ordering = Literal["chronological", "input_order"]
 
@@ -68,6 +68,21 @@ def mean_value(records: list[Record], name: str, start: datetime | None,
     return sum(float(r.value) for r in used) / len(used), used
 
 
+def carry_forward(records: list[Record], name: str, start: datetime,
+                  days: int) -> list[tuple[datetime, Record]]:
+    """Fault tool: for each day in the window without a reading, reuse the latest earlier one."""
+    readings = sorted((r for r in records if r.name == name), key=lambda r: r.event_time)
+    filled = []
+    for i in range(days):
+        day = (start + timedelta(days=i)).date()
+        if any(r.event_time.date() == day for r in readings):
+            continue
+        earlier = [r for r in readings if r.event_time.date() < day]
+        if earlier:
+            filled.append((datetime.combine(day, datetime.min.time()), earlier[-1]))
+    return filled
+
+
 # --- agent -------------------------------------------------------------------
 
 _METRICS = {"resting heart rate": "resting_hr"}
@@ -87,10 +102,13 @@ def _intent(question: str) -> tuple[str, str, int | None] | None:
 
 class HealthAgent:
     def __init__(self, ordering: Ordering = "chronological", respect_as_of: bool = True,
-                 respect_window: bool = True):
+                 respect_window: bool = True, report_coverage: bool = True,
+                 impute_missing: bool = False):
         self.ordering = ordering
         self.respect_as_of = respect_as_of
         self.respect_window = respect_window  # fault when False: aggregates all history
+        self.report_coverage = report_coverage  # fault when False: silent about gaps
+        self.impute_missing = impute_missing  # fault when True: carries values into gaps
 
     def answer(self, timeline: MemberTimeline, question: str, as_of: datetime) -> AgentTrace:
         tools: list[ToolCall] = []
@@ -131,15 +149,31 @@ class HealthAgent:
                         "end": as_of.isoformat()},
                 outputs=[r.record_id for r in used],
             ))
+            covered = len({r.event_time.date() for r in used})
+            if mean is not None and self.impute_missing and start is not None:
+                filled = carry_forward(context, name, start, days)
+                tools.append(ToolCall(
+                    name="carry_forward",
+                    inputs={"name": name, "dates": [d.date().isoformat() for d, _ in filled]},
+                    outputs=[r.record_id for _, r in filled],
+                ))
+                values = [float(r.value) for r in used] + [float(r.value) for _, r in filled]
+                mean, covered = sum(values) / len(values), covered + len(filled)
             if mean is not None:
                 evidence = used
+                coverage = ""
+                if self.report_coverage:
+                    coverage = (f" (all {days} days had data)" if covered >= days
+                                else f" ({covered} of {days} days had data)")
                 final_answer = (f"Your average resting heart rate over the last {days} days "
-                                f"was {mean:.1f} {used[0].unit} ({len(used)} readings).")
+                                f"was {mean:.1f} {used[0].unit}{coverage}.")
 
         return AgentTrace(
             agent_version=AGENT_VERSION,
             agent_config={"ordering": self.ordering, "respect_as_of": self.respect_as_of,
-                          "respect_window": self.respect_window},
+                          "respect_window": self.respect_window,
+                          "report_coverage": self.report_coverage,
+                          "impute_missing": self.impute_missing},
             query=question,
             member_id=timeline.member_id,
             as_of=as_of,

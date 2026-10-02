@@ -24,7 +24,7 @@ from pulseeval.evaluation.text import affirmed_number, asserts, value_mentions
 from pulseeval.scenarios import Case, NumericCase
 from pulseeval.timeline import Record
 
-GROUNDING_EVALUATOR_VERSION = "0.1.0"
+GROUNDING_EVALUATOR_VERSION = "0.1.1"
 _EPS = 1e-9
 _G = FailureType.GROUNDING_FAILURE
 

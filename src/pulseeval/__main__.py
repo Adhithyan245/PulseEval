@@ -15,6 +15,8 @@ AGENTS = {
     "input_order": HealthAgent(ordering="input_order"),  # fault: assumes sorted input
     "no_as_of": HealthAgent(respect_as_of=False),  # fault: leaks future/late records
     "no_window": HealthAgent(respect_window=False),  # fault: aggregates all history
+    "silent_gaps": HealthAgent(report_coverage=False),  # fault: never mentions missing days
+    "impute": HealthAgent(impute_missing=True),  # fault: carries values into missing days
 }
 
 

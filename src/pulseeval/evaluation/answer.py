@@ -12,7 +12,7 @@ from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureTyp
 from pulseeval.evaluation.text import affirmed_number, asserts, value_mentions
 from pulseeval.scenarios import Case, NumericCase, StateCase
 
-ANSWER_EVALUATOR_VERSION = "0.2.0"
+ANSWER_EVALUATOR_VERSION = "0.2.1"
 _EPS = 1e-9  # absorbs float noise at the tolerance boundary
 
 
