@@ -2,6 +2,8 @@
 
 State questions: the current value is affirmed and no other value of that field is affirmed.
 Numeric questions: exactly one affirmed number with the unit, within an absolute tolerance.
+Relationship questions: every labelled group mean is affirmed in the unit, within tolerance
+(how the relationship is framed causally is causal restraint, not answer correctness).
 Judged against hand-labelled / independently recomputed expectations, never agent code.
 """
 
@@ -9,10 +11,10 @@ from __future__ import annotations
 
 from pulseeval.agent import AgentTrace
 from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureType, build_result
-from pulseeval.evaluation.text import affirmed_number, asserts, value_mentions
-from pulseeval.scenarios import AssessmentCase, Case, NumericCase, StateCase
+from pulseeval.evaluation.text import affirmed_number, asserts, numbers_with_unit, value_mentions
+from pulseeval.scenarios import AssessmentCase, Case, NumericCase, RelationshipCase, StateCase
 
-ANSWER_EVALUATOR_VERSION = "0.2.2"
+ANSWER_EVALUATOR_VERSION = "0.3.0"
 _EPS = 1e-9  # absorbs float noise at the tolerance boundary
 
 
@@ -67,9 +69,30 @@ def _numeric_specs(case: NumericCase, trace: AgentTrace) -> list[CheckSpec]:
     ]
 
 
+def _relationship_specs(case: RelationshipCase, trace: AgentTrace) -> list[CheckSpec]:
+    reported = [v for v, polarity in numbers_with_unit(trace.final_answer, case.unit)
+                if polarity == "affirmed"]
+    missing = {group: mean for group, mean in case.expected_group_means.items()
+               if not any(abs(v - mean) <= case.tolerance + _EPS for v in reported)}
+    return [
+        CheckSpec(
+            name="group_means_reported", failure_type=FailureType.NUMERICAL_FAILURE,
+            passed=not missing, severity="high",
+            expected_behavior=(f"Answer reports each group mean {case.expected_group_means} "
+                               f"{case.unit} (±{case.tolerance:g})."),
+            actual_behavior=(f"Affirmed values: {reported} {case.unit}"
+                             + (f"; not found: {missing}." if missing else ".")),
+        ),
+    ]
+
+
 def evaluate_answer_correctness(case: Case, trace: AgentTrace) -> EvaluationResult | None:
     if isinstance(case, AssessmentCase):
         return None  # open assessment: no single correct value (ADR-009, ADR-010)
-    specs = (_numeric_specs(case, trace) if isinstance(case, NumericCase)
-             else _state_specs(case, trace))
+    if isinstance(case, RelationshipCase):
+        specs = _relationship_specs(case, trace)
+    elif isinstance(case, NumericCase):
+        specs = _numeric_specs(case, trace)
+    else:
+        specs = _state_specs(case, trace)
     return build_result(case.case_id, "answer_correctness", ANSWER_EVALUATOR_VERSION, trace, specs)

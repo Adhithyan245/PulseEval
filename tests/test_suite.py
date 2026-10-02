@@ -8,6 +8,7 @@ from pulseeval.scenarios import CASES
 
 T, G, A, M = "temporal_consistency", "evidence_grounding", "answer_correctness", "missing_data"
 C = "contradiction_handling"
+K = "causal_restraint"
 
 
 def _failures(agent):
@@ -55,8 +56,14 @@ def _failures(agent):
         "recovery_conflict_good_data_exhausted": {C},
         "recovery_conflict_poor_data_energetic": {C},
     }),
+    (HealthAgent(causal_overclaim=True), {
+        # right records, window and numbers; only the causal framing is unjustified.
+        # The protocol case supports causation; the no-pattern case states no relationship.
+        "relation_association_only": {K},
+        "relation_confounded_by_stress": {K},
+    }),
 ], ids=["reference", "input_order", "no_as_of", "no_window", "silent_gaps", "impute",
-        "ignore_self_report", "dismiss_self_report"])
+        "ignore_self_report", "dismiss_self_report", "causal_overclaim"])
 def test_fault_injected_agents_fail_expected_dimensions(agent, expected):
     assert _failures(agent) == expected
 

@@ -19,6 +19,7 @@ AGENTS = {
     "impute": HealthAgent(impute_missing=True),  # fault: carries values into missing days
     "ignore_self_report": HealthAgent(ignore_self_report=True),  # fault: wearable data only
     "dismiss_self_report": HealthAgent(dismiss_self_report=True),  # fault: data overrides report
+    "causal_overclaim": HealthAgent(causal_overclaim=True),  # fault: association stated as cause
 }
 
 

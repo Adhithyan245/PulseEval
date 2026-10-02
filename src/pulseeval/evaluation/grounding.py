@@ -9,7 +9,9 @@ Checks the agent's `evidence_used` against the case and the timeline:
   no_contradicting_evidence    - (state) no cited record silently contradicts the claim
 For assessments (ADR-010) the required records are the labelled wearable + self-report ids
 and relevance uses the case's `relevant_names`; how a wearable/self-report conflict is
-represented is contradiction handling, not grounding.
+represented is contradiction handling, not grounding. For relationships (ADR-011) the
+required records are the paired observations plus any causal-basis records; how the
+relationship is described causally is causal restraint.
 
 Knowability at as_of (late-synced / future data) is temporal consistency, and whether the
 claim is *right* is answer correctness; this evaluator only asks whether the claim is
@@ -24,16 +26,17 @@ from datetime import datetime
 from pulseeval.agent import AgentTrace
 from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureType, build_result
 from pulseeval.evaluation.text import affirmed_number, asserts, value_mentions
-from pulseeval.scenarios import AssessmentCase, Case, NumericCase, StateCase
+from pulseeval.scenarios import AssessmentCase, Case, NumericCase, RelationshipCase, StateCase
 from pulseeval.timeline import Record
 
-GROUNDING_EVALUATOR_VERSION = "0.2.0"
+GROUNDING_EVALUATOR_VERSION = "0.3.0"
 _EPS = 1e-9
 _G = FailureType.GROUNDING_FAILURE
+_OPEN = AssessmentCase | RelationshipCase  # no single claimed value to support
 
 
 def _window(case: Case) -> tuple[datetime | None, datetime]:
-    start = case.window_start if isinstance(case, NumericCase | AssessmentCase) else None
+    start = case.window_start if not isinstance(case, StateCase) else None
     return start, case.as_of
 
 
@@ -42,11 +45,13 @@ def _required(case: Case) -> list[str]:
         return case.expected_record_ids
     if isinstance(case, AssessmentCase):
         return case.wearable_record_ids + case.self_report_record_ids
+    if isinstance(case, RelationshipCase):
+        return case.relationship_record_ids + case.causal_basis_record_ids
     return [case.expected_record_id]
 
 
 def _relevant_names(case: Case) -> list[str]:
-    return case.relevant_names if isinstance(case, AssessmentCase) else [case.target_name]
+    return case.relevant_names if isinstance(case, _OPEN) else [case.target_name]
 
 
 def _support_spec(case: Case, trace: AgentTrace, relevant: list[Record]) -> CheckSpec:
@@ -134,7 +139,7 @@ def evaluate_evidence_grounding(case: Case, trace: AgentTrace) -> EvaluationResu
                                    else "All cited events are within the window."),
                   evidence=outside),
     ]
-    if not isinstance(case, AssessmentCase):  # an assessment has no single value to support
+    if not isinstance(case, _OPEN):  # assessments / relationships: no single value to support
         specs.append(_support_spec(case, trace, relevant))
     if isinstance(case, StateCase):
         specs.append(_contradiction_spec(trace, relevant))

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from pulseeval.timeline import MemberTimeline, Record
 
-AGENT_VERSION = "0.4.0"
+AGENT_VERSION = "0.5.0"
 
 Ordering = Literal["chronological", "input_order"]
 
@@ -100,6 +100,8 @@ def _intent(question: str) -> tuple[str, str, int | None] | None:
         return "current", "training_goal", None
     if "recover" in q:
         return "assess", "recovery", None
+    if "related" in q and "sleep" in q and "hrv" in q:
+        return "relate", "sleep_duration:hrv", 14
     days = re.search(r"last (\d+) days", q)
     for phrase, name in _METRICS.items():
         if "average" in q and phrase in q and days:
@@ -111,7 +113,7 @@ class HealthAgent:
     def __init__(self, ordering: Ordering = "chronological", respect_as_of: bool = True,
                  respect_window: bool = True, report_coverage: bool = True,
                  impute_missing: bool = False, ignore_self_report: bool = False,
-                 dismiss_self_report: bool = False):
+                 dismiss_self_report: bool = False, causal_overclaim: bool = False):
         self.ordering = ordering
         self.respect_as_of = respect_as_of
         self.respect_window = respect_window  # fault when False: aggregates all history
@@ -119,6 +121,54 @@ class HealthAgent:
         self.impute_missing = impute_missing  # fault when True: carries values into gaps
         self.ignore_self_report = ignore_self_report  # fault: wearable data only
         self.dismiss_self_report = dismiss_self_report  # fault: resolves conflicts for the data
+        self.causal_overclaim = causal_overclaim  # fault: states an association as causation
+
+    def _relate(self, context: list[Record], as_of: datetime, days: int,
+                tools: list[ToolCall]) -> tuple[list[Record], str]:
+        """Pair sleep and HRV by day; compare the shortest vs. the longest nights."""
+        start = as_of - timedelta(days=days)
+        in_window = [r for r in context if start <= r.event_time <= as_of]
+        by_day: dict = {}
+        for r in in_window:
+            if r.name in ("sleep_duration", "hrv"):
+                by_day.setdefault(r.event_time.date(), {})[r.name] = r
+        pairs = sorted((p for p in by_day.values() if len(p) == 2),
+                       key=lambda p: float(p["sleep_duration"].value))
+        protocol = [r for r in in_window if r.name == "sleep_protocol"]
+        tools.append(ToolCall(name="pair_by_day", inputs={"from": start.isoformat(),
+                                                          "exposure": "sleep_duration",
+                                                          "outcome": "hrv"},
+                              outputs=[r.record_id for p in pairs for r in p.values()]))
+        k = len(pairs) // 2
+        if k < 2:
+            return [], "I don't have enough paired sleep and HRV data to compare."
+        low, high = pairs[:k], pairs[-k:]
+
+        def mean(group, name):
+            return sum(float(p[name].value) for p in group) / len(group)
+
+        lh, hh = mean(low, "hrv"), mean(high, "hrv")
+        evidence = [r for p in pairs for r in p.values()] + protocol
+        answer = (f"On the {k} days with the least sleep (average {mean(low, 'sleep_duration'):.1f}"
+                  f" h), your HRV averaged {lh:.1f} ms; on the {k} days with the most sleep "
+                  f"(average {mean(high, 'sleep_duration'):.1f} h), it averaged {hh:.1f} ms.")
+        if abs(hh - lh) < 3.0:
+            return evidence, answer + (" Your HRV was similar on shorter and longer sleep days, "
+                                       "so this data does not show a clear association.")
+        lower_with_less = hh > lh
+        if protocol and not self.causal_overclaim:
+            effect = "lowered" if lower_with_less else "raised"
+            return evidence, answer + (
+                " Because your sleep length was assigned in advance by the protocol you followed,"
+                f" this comparison supports that shorter sleep {effect} your HRV during this "
+                "period.")
+        if self.causal_overclaim:
+            return evidence, answer + (f" Sleeping less caused your HRV to "
+                                       f"{'drop' if lower_with_less else 'rise'}.")
+        return evidence, answer + (
+            f" Your HRV was {'lower' if lower_with_less else 'higher'} on days when you slept "
+            "less. This is an association in your data and does not establish that sleep caused "
+            "the difference; other factors may be involved.")
 
     def _assess_recovery(self, context: list[Record], as_of: datetime,
                          tools: list[ToolCall]) -> tuple[list[Record], str]:
@@ -203,6 +253,10 @@ class HealthAgent:
                 final_answer = (f"Your current training goal is {record.value} "
                                 f"(set {record.event_time:%Y-%m-%d}).")
 
+        elif intent and intent[0] == "relate":
+            window = (as_of - timedelta(days=intent[2]), as_of)
+            evidence, final_answer = self._relate(context, as_of, intent[2], tools)
+
         elif intent and intent[0] == "assess":
             window = (as_of - timedelta(days=8), as_of)
             evidence, final_answer = self._assess_recovery(context, as_of, tools)
@@ -244,7 +298,8 @@ class HealthAgent:
                           "report_coverage": self.report_coverage,
                           "impute_missing": self.impute_missing,
                           "ignore_self_report": self.ignore_self_report,
-                          "dismiss_self_report": self.dismiss_self_report},
+                          "dismiss_self_report": self.dismiss_self_report,
+                          "causal_overclaim": self.causal_overclaim},
             query=question,
             member_id=timeline.member_id,
             as_of=as_of,

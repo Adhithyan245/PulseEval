@@ -248,3 +248,125 @@ def contradiction_claims(answer: str) -> ContradictionClaims:
         if polarity != "hedged" and not _ATTRIBUTION.search(text):
             claims.verdicts += [m.group(0) for m in _VERDICT.finditer(text)]
     return claims
+
+
+# --- causal claims (causal restraint) ---------------------------------------------
+# Every causal-cue occurrence is classified by its context instead of counted as a keyword:
+#   quoted       inside "..." (someone else's words / the question)
+#   uncertain    under "whether", "cannot tell", "unclear", "no evidence" ... (epistemic)
+#   hypothetical under "if", "suppose", "imagine" ...
+#   negated      in a clause negated by not / no / never / n't / cannot / without
+#   hedged       in a clause with may / might / could / would / possibly ...
+#   asserted     none of the above
+# Only cues in a clause that mentions both the exposure and the outcome count as claims about
+# the relationship. The shared `_polarity` is not used for negation here because its negation
+# set includes goal verbs ("dropped", "stopped") that are ordinary outcome verbs in this context
+# ("your HRV dropped").
+
+CausalMode = Literal["asserted", "negated", "uncertain", "hypothetical", "hedged", "quoted"]
+
+_CAUSAL_CUE = re.compile(
+    r"\b(?:caus(?:e|es|ed|ing)|led to|leads? to|leading to|result(?:s|ed)? in|"
+    r"(?:is|was|are|were) why|the reason (?:for|why)|because|due to|as a result of|"
+    r"dr(?:ove|ives|ive|iving)|trigger(?:s|ed)?|responsible for|"
+    r"(?:made|makes|make|lower(?:s|ed)?|raise[sd]?|reduce[sd]?|improve[sd]?|decrease[sd]?|"
+    r"increase[sd]?|affect(?:s|ed)?|impact(?:s|ed)?|hurt|harm(?:s|ed)?|boost(?:s|ed)?) your)\b")
+# Causal vocabulary that can carry a qualification on its own ("does not establish causation").
+_CAUSAL_NOUN = re.compile(r"\b(?:caus\w*|cause and effect|prov(?:e|es|en|ing)|proof)\b")
+_CAUSAL_NEGATORS = {"not", "no", "never", "neither", "nor", "cannot", "without"}
+_CAUSAL_HEDGES = _HEDGE | {"would", "possible", "suggests", "suggest"}
+_UNCERTAIN_MARKER = re.compile(
+    r"\b(?:whether|cannot|can't|unable to|impossible|unclear|unknown|uncertain|not sure|"
+    r"no evidence|not possible|hard to say|not known)\b")
+_HYPOTHETICAL_MARKER = re.compile(r"\b(?:if|suppose|supposing|imagine|assume|assuming|"
+                                  r"hypothetically|were to)\b")
+_ALTERNATIVE = re.compile(r"\b(?:other factors?|other explanations?|another (?:factor|variable|"
+                          r"explanation)|something else|confound\w*|third (?:factor|variable))\b")
+_ASSOCIATION_CUE = re.compile(
+    r"\b(?:associat\w*|correlat\w*|related|relationship|linked|link|tend(?:s|ed)? to|"
+    r"coincid\w*|mov(?:ed|e) together|went together|co-occur\w*|pattern|"
+    r"on (?:the )?(?:days|nights|mornings) (?:when|with|after)|following)\b")
+_QUOTED = re.compile(r"\"[^\"]*\"|“[^”]*”")
+_OUTCOME_LOW = {"lower", "low", "decreased", "decrease", "dropped", "drop", "fell", "reduced",
+                "worse"}
+_OUTCOME_HIGH = {"higher", "high", "increased", "increase", "rose", "rise", "raised",
+                 "improved", "better"}
+_EXPOSURE_LESS = {"less", "shorter", "short", "fewer", "little"}
+_EXPOSURE_MORE = {"more", "longer", "long"}
+
+
+class CausalClaims(BaseModel):
+    """How an answer frames the relationship between an exposure and an outcome."""
+
+    occurrences: list[tuple[CausalMode, str]] = []  # (mode, clause) for relationship cues
+    qualified: bool = False  # explicit: causation not established / other factors
+    association_stated: bool = False  # affirmed association or pattern statement
+    stated_directions: list[Literal["positive", "negative"]] = []
+
+    @property
+    def asserted(self) -> list[str]:
+        return [c for mode, c in self.occurrences if mode == "asserted"]
+
+    @property
+    def speculative(self) -> list[str]:
+        return [c for mode, c in self.occurrences if mode in ("hedged", "hypothetical")]
+
+
+def _term_regex(terms: list[str]) -> re.Pattern:
+    return re.compile(r"\b(?:" + "|".join(re.escape(t.lower()) for t in terms) + r")\w*")
+
+
+def _direction(words: set[str]) -> Literal["positive", "negative"] | None:
+    """Unambiguous direction from comparative words, e.g. lower HRV + less sleep = positive."""
+    low, high = bool(words & _OUTCOME_LOW), bool(words & _OUTCOME_HIGH)
+    less, more = bool(words & _EXPOSURE_LESS), bool(words & _EXPOSURE_MORE)
+    if low == high or less == more:
+        return None
+    return "positive" if low == less else "negative"
+
+
+def causal_claims(answer: str, exposure_terms: list[str],
+                  outcome_terms: list[str]) -> CausalClaims:
+    claims = CausalClaims()
+    exposure, outcome = _term_regex(exposure_terms), _term_regex(outcome_terms)
+    quoted = [q for q in _QUOTED.findall(answer)
+              if _CAUSAL_CUE.search(q.lower()) and exposure.search(q.lower())
+              and outcome.search(q.lower())]
+    claims.occurrences += [("quoted", q) for q in quoted]
+    for clause in clauses(_QUOTED.sub(" (quoted) ", answer)):
+        text = clause.lower()
+        words = set(re.findall(r"[a-z']+", text))
+        negated = bool(words & _CAUSAL_NEGATORS) or any(w.endswith("n't") for w in words)
+        hedged = bool(words & _CAUSAL_HEDGES)
+        about = bool(exposure.search(text) and outcome.search(text))
+
+        if (_CAUSAL_NOUN.search(text) or _CAUSAL_CUE.search(text)) and (
+                negated or _UNCERTAIN_MARKER.search(text)):
+            claims.qualified = True
+        if _ALTERNATIVE.search(text) and not negated:
+            claims.qualified = True
+
+        modes = []
+        if about:
+            for cue in _CAUSAL_CUE.finditer(text):
+                prefix = text[:cue.start()]
+                if _UNCERTAIN_MARKER.search(prefix):
+                    modes.append("uncertain")
+                elif _HYPOTHETICAL_MARKER.search(prefix):
+                    modes.append("hypothetical")
+                elif negated:
+                    modes.append("negated")
+                elif hedged:
+                    modes.append("hedged")
+                else:
+                    modes.append("asserted")
+        claims.occurrences += [(mode, clause) for mode in modes]
+
+        affirmed = not negated and not hedged
+        if affirmed and _ASSOCIATION_CUE.search(text):
+            claims.association_stated = True
+        if affirmed and (_ASSOCIATION_CUE.search(text) or "asserted" in modes):
+            direction = _direction(words)
+            if direction:
+                claims.stated_directions.append(direction)
+    return claims
