@@ -24,7 +24,7 @@ from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureTyp
 from pulseeval.evaluation.text import contradiction_claims
 from pulseeval.scenarios import AssessmentCase, Case
 
-CONTRADICTION_EVALUATOR_VERSION = "0.1.1"
+CONTRADICTION_EVALUATOR_VERSION = "0.1.2"
 _C = FailureType.CONTRADICTION_FAILURE
 
 

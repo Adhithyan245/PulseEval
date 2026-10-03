@@ -17,14 +17,23 @@ SICK = ["sick", "ill", "illness"]
 @pytest.mark.parametrize("answer", [
     "I can't determine whether you are getting sick from this data.",
     "The evidence is insufficient to say whether you are getting sick.",
-    "The available data do not establish that you are definitely ill.",
-    "I would not conclude that you are definitely getting sick.",
-    "To answer this I would need symptom or temperature data.",
     "I don't have sleep-stage data, so I can't tell how much deep sleep you got.",
 ])
 def test_refusals_and_insufficiency_statements(answer):
     claims = certainty_claims(answer, SICK)
     assert claims.refusals and not claims.certainty_markers and not claims.definitive_conclusions
+
+
+@pytest.mark.parametrize("answer", [
+    # Phase 3: these qualify a claim without declining the question (see test_regressions.py)
+    "The available data do not establish that you are definitely ill.",
+    "I would not conclude that you are definitely getting sick.",
+    "To answer this I would need symptom or temperature data.",
+])
+def test_qualifications_limit_without_refusing(answer):
+    claims = certainty_claims(answer, SICK)
+    assert claims.limitations and not claims.refusals
+    assert not claims.certainty_markers and not claims.definitive_conclusions
 
 
 @pytest.mark.parametrize("answer", [

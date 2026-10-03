@@ -31,7 +31,7 @@ from pulseeval.scenarios import (AssessmentCase, Case, NumericCase, OpenQuestion
                                  RelationshipCase, StateCase)
 from pulseeval.timeline import Record
 
-GROUNDING_EVALUATOR_VERSION = "0.4.0"
+GROUNDING_EVALUATOR_VERSION = "0.4.1"
 _EPS = 1e-9
 _G = FailureType.GROUNDING_FAILURE
 _OPEN = AssessmentCase | RelationshipCase | OpenQuestionCase  # no single claimed value
@@ -73,7 +73,8 @@ def _support_spec(case: Case, trace: AgentTrace, relevant: list[Record]) -> Chec
         expected = f"Claimed value equals the mean of the cited readings (±{case.tolerance:g})."
     else:
         field_values = {str(r.value) for r in case.timeline.records if r.name == case.target_name}
-        claimed = sorted(v for v in field_values if asserts(trace.final_answer, v))
+        claimed = sorted(v for v in field_values
+                         if asserts(trace.final_answer, v, sorted(field_values)))
         cited_values = {str(r.value) for r in relevant}
         unsupported = [v for v in claimed if v not in cited_values]
         ok = not unsupported
@@ -88,9 +89,10 @@ def _support_spec(case: Case, trace: AgentTrace, relevant: list[Record]) -> Chec
 def _contradiction_spec(trace: AgentTrace, relevant: list[Record]) -> CheckSpec:
     # A cited value is fine if it is the claim, or the answer explicitly frames it
     # (past/negated). Otherwise the record is presented as support for a claim it contradicts.
+    values = sorted({str(r.value) for r in relevant})
     contradicting = [r.record_id for r in relevant
-                     if not value_mentions(trace.final_answer, str(r.value))]
-    claimed_any = any(asserts(trace.final_answer, str(r.value)) for r in relevant)
+                     if not value_mentions(trace.final_answer, str(r.value), values)]
+    claimed_any = any(asserts(trace.final_answer, str(r.value), values) for r in relevant)
     ok = not (contradicting and claimed_any)
     return CheckSpec(
         name="no_contradicting_evidence", failure_type=_G, passed=ok, severity="medium",

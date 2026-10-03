@@ -29,7 +29,7 @@ from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureTyp
 from pulseeval.evaluation.text import certainty_claims
 from pulseeval.scenarios import Case
 
-UNCERTAINTY_EVALUATOR_VERSION = "0.1.0"
+UNCERTAINTY_EVALUATOR_VERSION = "0.1.1"
 _U, _A = FailureType.UNCERTAINTY_FAILURE, FailureType.ABSTENTION_FAILURE
 
 

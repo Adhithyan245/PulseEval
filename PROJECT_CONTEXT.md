@@ -2,24 +2,24 @@
 
 ## CURRENT STATUS
 
-Phase: 2 — Core Evaluation
+Phase: 3 — Hardening & Benchmark Validation (user-redefined; see change log)
 
-Status: COMPLETE (Phase 2: all 7 dimensions implemented; stopped for review)
+Status: COMPLETE (Phase 3; stopped for review — no Phase 4, no push)
 
 Last completed:
-Uncertainty/abstention evaluator (7th dimension, ADR-012): certainty labels, OpenQuestionCase, mixed wearable direction, 7 synthetic cases, agent v0.6.0 with `overconfident` and `false_abstention`. 258 tests pass (254 + 4 skipped without local PHIA data).
+Phase 3 hardening: 41 synthetic cases (+17), adversarial wording matrix, 6 parser/evaluator defects found and fixed with regression tests, fault and independence matrices, metamorphic tests, provenance/PHIA-boundary tests, 14/14 mutations detected, clean-copy reproduction, BENCHMARK.md (ADR-013). 429 passed + 7 xfailed with PHIA; 424 passed + 5 skipped + 7 xfailed without.
 
 Currently working on:
 Nothing — awaiting review.
 
 Next task:
-Phase 3 (memory evaluation) — not started (user instruction: stop after Phase 2).
+None scheduled (user: stop after Phase 3). Memory evaluation remains deferred.
 
 Blocked by:
 None.
 
 Last architecture change:
-ADR-012 (certainty labels + OpenQuestionCase + mixed wearable direction) — Implemented.
+ADR-013 (benchmark module + committed, test-verified BENCHMARK.md) — Implemented.
 
 Last context update:
 2026-10-02
@@ -51,17 +51,18 @@ Not a health chatbot, diagnosis/treatment/clinical-decision system, generic RAG 
 | SUT agent v0.6.0 (`agent.py`): intents = current training goal, N-day mean resting HR (states coverage), recovery assessment, sleep/HRV relationship, out-of-scope questions (illness, sleep stages) | Implemented, tested |
 | Agent trace schema | Implemented |
 | Temporal-consistency evaluator v0.3.0 (knowability only) | Implemented, tested |
-| Evidence-grounding evaluator v0.4.0 (handles assessments, relationships, open questions) | Implemented, tested |
-| Answer-correctness evaluator v0.3.1 (state, numeric, relationship group means; N/A for assessments, open questions) | Implemented, tested |
-| Missing-data handling evaluator v0.1.1 (numeric cases only) | Implemented, tested |
-| Contradiction-handling evaluator v0.1.1 (assessment cases only) | Implemented, tested |
-| Causal-restraint evaluator v0.1.0 (relationship cases only) | Implemented, tested |
-| Uncertainty/abstention evaluator v0.1.0 (certainty-labelled cases only) | Implemented, tested |
-| Scenarios v0.7.0: 24 fixture cases (4 state, 5 numeric, 9 assessment, 4 relationship, 2 open), each with `provenance`; 7 certainty-labelled | Implemented |
+| Evidence-grounding evaluator v0.4.1 (handles assessments, relationships, open questions) | Implemented, tested |
+| Answer-correctness evaluator v0.3.2 (state, numeric, relationship group means; N/A for assessments, open questions) | Implemented, tested |
+| Missing-data handling evaluator v0.1.2 (numeric cases only) | Implemented, tested |
+| Contradiction-handling evaluator v0.1.2 (assessment cases only) | Implemented, tested |
+| Causal-restraint evaluator v0.1.1 (relationship cases only) | Implemented, tested |
+| Uncertainty/abstention evaluator v0.1.1 (certainty-labelled cases only) | Implemented, tested |
+| Scenarios v0.8.0: 41 synthetic cases (9 state, 12 numeric, 11 assessment, 6 relationship, 3 open), each with `provenance`; 11 certainty-labelled | Implemented |
+| Benchmark (`benchmark.py`, `python -m pulseeval --benchmark`, BENCHMARK.md) | Implemented, test-verified |
 | PHIA adapter (`phia.py`): 1 user, 2 numeric cases, PulseEval-recomputed values | Implemented, tested (skips without local data) |
 | CLI report (`python -m pulseeval [--phia DIR]`) | Implemented |
 | MMASH | Verified (§8); not downloaded |
-| Memory lifecycle (Phase 3), MMASH, LLM agent, UI | Not started |
+| Memory lifecycle (deferred), MMASH, LLM agent, UI | Not started |
 
 ## 6. Current Architecture
 
@@ -90,10 +91,11 @@ Evaluators receive the case (expectations) and the trace; they never call agent 
 ## 7. Repository Structure
 
 ```text
-PROJECT_CONTEXT.md   README.md   pyproject.toml   .gitignore
+PROJECT_CONTEXT.md   README.md   BENCHMARK.md (generated)   pyproject.toml   .gitignore
 src/pulseeval/
   __init__.py
-  __main__.py          # CLI: runs suite, prints report / JSON; --phia DIR adds PHIA cases
+  __main__.py          # CLI: runs suite, prints report / JSON; --phia DIR; --benchmark
+  benchmark.py         # agent configs, fault intent, independence/overlap analysis, report
   timeline.py          # Record, MemberTimeline (as-of semantics)
   agent.py             # SUT: tools, HealthAgent, ToolCall, AgentTrace
   scenarios.py         # StateCase, NumericCase, fixture cases
@@ -112,6 +114,7 @@ src/pulseeval/
 tests/
   test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_missing_data.py
   test_contradiction.py  test_causal.py  test_uncertainty.py  test_suite.py  test_phia.py
+  test_regressions.py  test_wording.py  test_invariants.py  test_provenance.py  test_benchmark.py
 data/raw/            # git-ignored; local copies only (data/raw/phia/: 14 files, ~700 KB)
 ```
 
@@ -262,6 +265,17 @@ Abstaining when only uncertainty is required passes this dimension (declining is
 
 **Coverage parsing (`text.coverage_claims`):** lexical patterns applied in order with matched spans removed: "M of N days missing", "A of N days", "all N days", "based on (the) A (available) days", "M days missing", "A readings / days with data"; number words zero–twenty; counts are read regardless of clause polarity; completeness/gap/imputation wording is polarity-aware ("without imputing" is not an imputation claim).
 
+**Phase 3 fixes to shared text analysis (each with a regression test; no evaluator redesign):**
+1. Superstring values: `value_mentions` / `asserts` accept `among` (other known values of the field); longer values containing the value are masked first, so "marathon" is not found inside "half marathon" (answer v0.3.2, grounding v0.4.1). Found by `goal_value_superstring`; also fixed the mirror false pass.
+2. Qualification ≠ refusal: "does not establish", "would not conclude", "would need" moved from refusals to limitations, so a caveated complete answer is not an unnecessary abstention (uncertainty v0.1.1). Found by `unc_direct_relationship`.
+3. Sentence-initial subordinate phrases ("Despite / While / Although / Though / Whereas …,") end at their first comma. Found by the wording matrix.
+4. Cue lookup also checks unstemmed words (plural stemming turned "previous" into "previou"); "previous" added to past cues.
+5. Certainty markers count only in clauses about the case's conclusion when `conclusion_terms` exist ("your resting HR is clearly higher" is a supported observation).
+6. Whitespace runs are collapsed before parsing (multi-word patterns use single spaces). Found by the metamorphic tests.
+Versions bumped for every text-dependent evaluator: missing_data v0.1.2, contradiction v0.1.2, causal v0.1.1.
+
+**Supported-language boundary (documented as strict xfail in `test_wording.py`):** reported speech ("your coach said / thinks / is certain …") is treated as the agent's own claim; double negation is not resolved; conflict or uncertainty expressed only through unlisted wording ("opposite directions", "small sample", "grain of salt") is missed; single-quoted phrases are not masked.
+
 **Answer-text analysis (`text.py`, ADR-005):** sentences split on `.;!?` (not decimal points); new clause at contrast cues, contrastive negation only (`, not` / `and not` / `, without`), and `, so` (consequence clause; added with contradiction handling so "…conflict, so don't ignore…" keeps the conflict statement affirmed); "switched … from X to Y" → X past; mention = contiguous, ordered content tokens; polarity negated > past > hedged > affirmed; hedged mentions are not assertions.
 
 **Separation examples (observed):** `overconfident` on `unc_sparse_rhr_7d` → only uncertainty_abstention fails (temporal, grounding, answer and missing-data pass: right records, window, 54.5 bpm and "2 of 7 days had data"); on `unc_ambiguous_recovery` contradiction passes and only uncertainty fails. `false_abstention` on `unc_direct_recovery_agree` → only uncertainty_abstention fails (the reverse direction). Overlap by design: a definitive resolution of a real wearable/self-report conflict fails both contradiction handling and uncertainty. `causal_overclaim` on `relation_association_only` and `relation_confounded_by_stress` → only causal_restraint fails (temporal, grounding, answer pass; missing-data and contradiction not applicable); on `relation_supported_by_protocol` the same causal wording passes. Hand-built traces: overclaim + HRV records dropped from evidence → grounding + causal fail; overclaim + retrieved future record → temporal + causal fail. `dismiss_self_report` on both conflict cases → only contradiction_handling fails (cites both sources; resolves the conflict for the data). `ignore_self_report` on agreement cases → only grounding fails (report not cited, no conflict to mishandle). `no_as_of` on `recovery_late_self_report` → temporal + contradiction (invented conflict) fail, grounding passes. `no_window` on `recovery_stale_self_report` → grounding (out of window) + contradiction fail, temporal passes. `silent_gaps` on PHIA 465 14-day (13/14) and on the fixture gap cases → only missing_data fails (correct, grounded, knowable answer presented as complete). `impute` on `rhr_mean_7d_late_sync` → only missing_data fails (the carried-forward value leaves the mean unchanged at 55.0). `no_window` → grounding + answer fail, temporal passes (wrong window, nothing unknowable; the claim is faithful to its own evidence). `no_as_of` on late-sync → temporal + answer fail, grounding passes (leaked reading is relevant and in-window). Retrieving-but-not-citing a future record → temporal fails only. Fabricated citation alongside correct evidence → grounding fails only.
@@ -276,25 +290,38 @@ Relationship suite (member M003, as_of 2026-05-11 09:00, 14-day window; 10 paire
 
 Uncertainty suite (ADR-012; built from existing fixtures plus a label): `unc_direct_rhr_7d` and `unc_direct_recovery_agree` (direct_answer_supported); `unc_sparse_rhr_7d` (2 of 7 days, 54+55 → 54.5 bpm; uncertainty_required); `unc_missing_sleep_stages` (open question; only total sleep exists; abstention_required); `unc_ambiguous_recovery` (HRV 62 and resting HR 59, both above baseline → mixed; uncertainty_required); `unc_conflict_recovery` (good data + "exhausted"; conflict_requires_qualification); `unc_out_of_scope_illness` (open question "Am I getting sick?" on HR/HRV data; abstention_required).
 
+Phase 3 hardening cases (17; each description names the assumption it targets): temporal — `rhr_window_boundaries` (reading exactly at window start included, one a minute earlier excluded), `goal_identical_event_time` (tie broken by recorded_at), `goal_three_updates_shuffled`, `goal_update_at_as_of`; grounding — `rhr_same_time_other_fields`; answer — `goal_value_superstring`, `rhr_exact_integer_mean`; missing data — `rhr_gap_first_day`, `rhr_gap_final_day`, `rhr_gap_three_days`; contradiction — `recovery_subtle_disagreement` ("tired"), `recovery_mixed_with_report` (not a conflict), `recovery_no_data` (both sources absent; open question); causal — `relation_negative_direction`; uncertainty — `unc_direct_relationship`, `unc_sparse_three_of_seven`, `unc_direct_goal`.
+
 PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.634286, 7/7), `phia465_rhr_mean_14d` (59.649231, 13/14 — 2023-10-21 missing in source, never imputed; missing-data regression case).
 
 Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage); contradiction perturbations (conflict acknowledged three ways; wearable only; self-report only + verdict; conflict not named; conflict named then resolved; self-report dismissed; wearable dismissed; agreement with/without invented conflict; negated conflict; verdict when sources agree; negated dismissal); causal parser tests (association phrasings, six asserted claims, negated / uncertain / hypothetical / hedged / quoted, qualifiers vs. non-qualifiers, unrelated "because", direction) and evaluator tests (restrained answers, unsupported claims, hypothetical-only, confounded, supported (permitted / wrong direction), no-pattern, the four independence cases, non-applicability); certainty parser tests (refusals, limitations, hedges, strong words under negation / refusal / hypothetical / quote, "not clearly", unqualified certainty, definitive conclusions incl. negative) and evaluator tests (direct plain / cautious / confident, refusing a supported answer, sparse with / without uncertainty, ambiguous, conflict, out-of-scope abstention vs. conclusion vs. hedge, fabricated sleep stages, quoted / hypothetical framing, both independence directions, non-applicability).
 
 Planned: stale memory, missing context, counterfactual.
 
-## 14. Metrics
+## 14. Metrics and Benchmark Methodology
 
-Per evaluator: pass rate = passed cases / evaluated cases; failures by type and check. All numbers come from actual runs only.
+Per evaluator: pass rate = passed applicable cases / applicable cases (ADR-009). All numbers come from actual runs only.
+
+**Benchmark (Phase 3, ADR-013):** 41 synthetic cases × 11 agent configurations (reference + 10 faults). Applicable cases per dimension: temporal 41, grounding 41, answer 27, missing data 12, contradiction 11, causal 6, uncertainty 11. The reference agent passes every applicable dimension on every case. PHIA cases (2) are evaluated separately and excluded from BENCHMARK.md so the report reproduces without the PHIA data.
+- **Fault model:** each fault declares intended dimensions and explained secondary (knock-on) dimensions (`FAULT_INTENT`); a test fails on any MISSING intended or UNEXPECTED observed dimension. Observed: no violations.
+- **Independence:** every dimension has at least one (agent, case) where it is the only failing dimension — except temporal, whose leaks always propagate to grounding/answer under the agent faults; its sole-failure witness is a curated trace (retrieves but does not cite a future record) — and at least one where it passes while another fails.
+- **Overlaps:** every co-failing dimension pair is classified (test-enforced): one *intentional overlap* (contradiction + uncertainty on a definitively resolved real conflict) and *shared root causes* (one fault breaking two properties, e.g. a wrong record cited and its value reported).
+- **Metamorphic invariants (`test_invariants.py`):** timeline record order (all agents except `input_order`), an unrelated record far outside every window, cited-id order, answer letter case and whitespace, repeated runs and case order — all leave every check outcome unchanged.
+- **Provenance/reproducibility (`test_provenance.py`):** unique case ids, provenance and semantics on every case, every failure traceable to case question, member, agent config and real record ids; no randomness or wall-clock reads in `src/`; PHIA labels never read; PHIA-enabled and PHIA-disabled runs agree on all synthetic cases.
+- **Mutation checks (temporary source patches, restored and verified byte-identical):** 14/14 detected — temporal boundary (15 failing tests), grounding window (7), missing-data acknowledgement (11) and completeness (5), contradiction negation of conflict (1) and dismissal (1), causal context (2) and negation (4), uncertainty refusals (6) and negated certainty (1, after adding a test for the one surviving mutant), and each Phase 3 fix (16, 3, 1, 10).
+- **Clean-copy reproduction:** the staged tree exported with `git checkout-index` into a fresh directory, fresh venv, `pip install -e ".[dev]"` (resolved pydantic 2.13.5 vs. 2.9.2 in development): 424 passed, 5 skipped (PHIA absent), 7 xfailed; `python -m pulseeval --benchmark` byte-identical to BENCHMARK.md and on repeat.
 
 ## 15. Development Phases
 
-0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation (in progress: temporal ✅, grounding ✅, answer/numerical ✅, missing-data ✅, contradiction ✅, causal restraint ✅, uncertainty/abstention ✅ — Phase 2 complete) · 3 Memory evaluation · 4 Adversarial suite · 5 Benchmarking (PHIA/MMASH) · 6 Reporting · 7 UI · 8 Research extensions.
+Roadmap revised 2026-10-02 (user): Phase 3 = Hardening & Benchmark Validation; memory evaluation moves to a later phase (not scheduled).
+0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation ✅ (7/7 dimensions; frozen at fd6f489) · 3 Hardening & benchmark validation ✅ · later, unscheduled: memory evaluation, real self-report data (MMASH), LLM-backed system under test, UI, research extensions.
 
 ## 16. Completed Work
 
 - Phase 0: empty directory audited; Python 3.11, pydantic 2.9, pytest; no API key.
 - Phase 1: vertical slice.
 - Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling; contradiction handling (synthetic self-reports); causal restraint (RelationshipCase); uncertainty/abstention (certainty labels, OpenQuestionCase). Phase 2 complete.
+- Phase 3 (hardening & benchmark validation): see §14 and the change log.
 - Git: `origin` = https://github.com/Adhithyan245/PulseEval.git; history rewritten 2026-10-02 to remove Claude co-author trailers (user decision); commits use the user's identity only.
 
 ## 17. In-Progress Work
@@ -303,7 +330,7 @@ None (stopped for review).
 
 ## 18. Planned Work
 
-1. Phase 3 — memory evaluation (create / update / invalidate / expire / delete); not started.
+1. Nothing scheduled. Candidate later work (not started): memory evaluation; real self-report data (MMASH); an LLM-backed system under test.
 3. Later (deferred by user): MMASH questionnaires as a real self-report source for contradiction cases.
 
 ## 19. Deferred Work
@@ -318,6 +345,7 @@ LLM-backed agent and LLM judge (until the deterministic layer is trusted — use
 - Answer-text analysis is lexical English heuristics: misses paraphrases ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation; errs toward failing answers it cannot parse.
 - Grounding `evidence_supports_claim` (state) only recognises claims of values that exist in the timeline; a fabricated free-text value is caught by answer_correctness, not grounding. Numeric support assumes the aggregate is a mean.
 - Numeric tolerance is absolute; number extraction requires the unit right after the number.
+- Benchmark scope: 41 synthetic cases from 3 synthetic members plus 2 PHIA-derived cases; results characterise the evaluators against a rule-based agent with injected faults, not real agents. Temporal consistency checks knowability at the question time, not record ordering (ordering errors surface in grounding/answer). Parser language boundaries: see §12 (strict xfail list).
 - Uncertainty/abstention: **behavioural, not statistical or clinical** — certainty labels are fixture judgements of evidence sufficiency. Parsing is lexical: uncertainty expressed only through unlisted wording ("I'd take this with a grain of salt") is missed; certainty words outside the list ("undeniably") are missed; `conclusion_terms` must be supplied per case; the structured `abstention` flag is trusted.
 - Causal restraint: **PulseEval judges causal language against case labels; it does not perform causal inference.** Causal-support labels are fixture assumptions (the protocol case is not evidence of a physiological effect). Parsing is lexical and clause-based: claims must mention both exposure and outcome terms in one clause ("That's because of your sleep." is missed); causal verbs used non-causally with both terms can false-positive; supported cases permit causal wording without checking that it cites the basis; direction is read only from unambiguous comparative pairs.
 - Contradiction: self-reports are synthetic single words with hand-labelled directions; the agent's good/poor rule (HRV and RHR vs a 7-day mean) is a fixture convention, not a physiological standard. Conflict/dismissal/verdict detection is lexical (misses e.g. "your body says otherwise", sarcasm, conflicts stated across sentences without conflict words); a verdict inside an attributed clause ("the data shows you are recovered") is treated as attributed.
@@ -465,6 +493,17 @@ Trade-offs: certainty levels are hand labels on synthetic fixtures; this is not 
 Affected components: scenarios.py, agent.py, evaluation/{text,grounding,answer,uncertainty (new)}.py, CLI, tests.
 Scope impact: Minor
 
+### ADR-013 — Benchmark module and test-verified report
+
+Status: Implemented
+Date: 2026-10-02
+Original approach: results reported ad hoc from CLI runs; fault expectations only in tests/test_suite.py.
+New approach: `benchmark.py` runs every agent configuration over the synthetic benchmark and renders a deterministic Markdown report (dimension applicability and pass/fail, fault intent vs. observed failures, independence and co-failure matrices, intentional overlaps, failure analysis from live evaluator output). `python -m pulseeval --benchmark` prints it; `BENCHMARK.md` is the committed output, and a test regenerates it and fails if it differs. The report covers synthetic cases only so it reproduces without the CC BY-NC PHIA data.
+Reason: Phase 3 requires consolidated, reproducible results that cannot silently drift from the code.
+Trade-offs: one more module and one generated file; any behaviour change requires regenerating BENCHMARK.md (intended).
+Affected components: benchmark.py (new), __main__.py, BENCHMARK.md (new), tests.
+Scope impact: Minor
+
 ## 23. Change Log
 
 ### 2026-10-02 — Phase 0 + Phase 1 vertical slice
@@ -547,6 +586,26 @@ Impact: Observed runs (fixture + PHIA, 26 cases), order temporal / grounding / a
 Files affected: agent.py, scenarios.py, __main__.py, evaluation/{__init__,text,grounding,answer,contradiction,uncertainty (new)}.py, tests/{test_uncertainty (new),test_suite,test_contradiction}.py, README.md, PROJECT_CONTEXT.md.
 Scope impact: Minor
 
+### 2026-10-02 — Roadmap: Phase 3 redefined as Hardening & Benchmark Validation
+
+Status: Accepted
+Original plan: Phase 3 = memory evaluation; Phase 4 adversarial suite; Phase 5 benchmarking; Phase 6 reporting.
+Change: user redefined Phase 3 as hardening and benchmark validation (benchmark expansion, adversarial wording, independence/fault matrices, metamorphic tests, provenance/reproducibility, consolidated report). Phase 2 is frozen: no evaluator redesign, no eighth dimension; defects get minimal fixes with regression tests. Memory evaluation is deferred, unscheduled.
+Reason: user decision.
+Impact: §15 roadmap note; ADR-013.
+Files affected: PROJECT_CONTEXT.md.
+Scope impact: Moderate (roadmap)
+
+### 2026-10-02 — Phase 3: hardening & benchmark validation
+
+Status: Implemented
+Original plan: (redefined) harden the frozen Phase 2 evaluators and validate the benchmark.
+Change: +17 synthetic cases (41 total, scenarios v0.8.0); `benchmark.py` + `--benchmark` + BENCHMARK.md (ADR-013); tests: regressions, wording matrix (7 strict-xfail boundaries), invariants, provenance/PHIA boundary, benchmark; six minimal shared-text fixes (§12) with version bumps; one test added to close a surviving mutant; PHIA-agreement check consolidated into one test (5 skips without PHIA instead of 15).
+Reason: prove PulseEval is a reliable, reproducible evaluation framework rather than a set of passing tests.
+Impact: Baseline (fd6f489, verified): 258 passed with PHIA; 254 + 4 skipped without; 26 cases. Final: 429 passed + 7 xfailed with PHIA; 424 passed + 5 skipped + 7 xfailed without; 43 cases (41 synthetic + 2 PHIA). Fault model: no violations. Independence: all 7 dimensions witnessed (temporal via a curated trace). Mutations: 14/14 detected. Clean-copy reproduction: matches. One transient environment stall (a single 10-minute suite run) was not reproducible; repeated runs take ~9 s.
+Files affected: scenarios.py, benchmark.py (new), __main__.py, evaluation/{text,answer,grounding,missing_data,contradiction,causal,uncertainty}.py, tests (5 new files; test_suite, test_contradiction, test_uncertainty updated), BENCHMARK.md (new), README.md, PROJECT_CONTEXT.md.
+Scope impact: Minor (no new dimension, no evaluator redesign)
+
 ## 24. Rules for Future Changes
 
 - Read CURRENT STATUS first; keep it true.
@@ -557,4 +616,5 @@ Scope impact: Minor
 - No LLM agent/judge and no UI without explicit user approval.
 - Never add Claude/Anthropic co-author lines to commits; user's git identity only.
 - Never label a value "ground truth" without recorded provenance (`Case.provenance`).
+- Regenerate BENCHMARK.md (`python -m pulseeval --benchmark > BENCHMARK.md`) after any behaviour change; the test fails otherwise.
 - Write regex-bearing code with the Edit/Write tools, not shell heredocs (backslash escapes were mangled); scan for control characters before committing.

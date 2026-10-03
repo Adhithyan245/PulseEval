@@ -13,7 +13,7 @@ from pydantic import BaseModel, model_validator
 
 from pulseeval.timeline import MemberTimeline, Record
 
-SCENARIOS_VERSION = "0.7.0"
+SCENARIOS_VERSION = "0.8.0"
 
 
 class _CaseBase(BaseModel):
@@ -423,4 +423,132 @@ CASES += [
                "Am I getting sick?",
                MemberTimeline(member_id="M002", records=_BASELINE + _TODAY["poor"]),
                RECOVERY_AS_OF, ["hrv", "resting_hr"], ["sick", "ill", "illness"]),
+]
+
+# --- Phase 3 hardening cases ---------------------------------------------------------
+# Each case targets one brittle assumption (named in its description) and reuses the
+# fixtures above. Expected values are hand-derived in the comments.
+
+_P3 = FIXTURE_PROVENANCE + " Phase 3 hardening case."
+
+
+def _state_case(case_id: str, description: str, records: list[Record], expected_id: str,
+                expected_value: str) -> StateCase:
+    return StateCase(
+        case_id=case_id, description=description,
+        timeline=MemberTimeline(member_id="M001", records=records),
+        question=GOAL_QUESTION, as_of=AS_OF, target_name="training_goal", provenance=_P3,
+        expected_record_id=expected_id, expected_value=expected_value,
+    )
+
+
+def _week_without(*days: str) -> tuple[list[Record], list[str]]:
+    kept = [r for r in _RHR_WEEK if r.record_id[3:] not in days]
+    return kept, [r.record_id for r in kept]
+
+
+_HRV_INVERSE = [62.0, 47.0, 60.0, 45.0, 64.0, 49.0, 61.0, 46.0, 63.0, 48.0]
+# short nights (idx 0,2,4,6,8): 62+60+64+61+63 = 310 -> 62.0 ms; long: 47+45+49+46+48 = 235 -> 47.0
+
+CASES += [
+    # temporal ---------------------------------------------------------------------
+    # 03-25 00:00 is exactly window_start (included); 03-24 23:59 is one minute outside.
+    # Included readings 55,54,56,53,57,55,54 -> 384/7 = 54.857.
+    _rhr_case("rhr_window_boundaries",
+              "Temporal boundary: a reading exactly at window start counts; one a minute "
+              "earlier (70 bpm) does not.",
+              [_r("r0325s", "physiological", "resting_hr", 55.0, "2026-03-25T00:00", unit="bpm"),
+               _r("r0324x", "physiological", "resting_hr", 70.0, "2026-03-24T23:59", unit="bpm")]
+              + _RHR_WEEK[1:],
+              expected=54.857, ids=["r0325s"] + _RHR_ALL_IDS[1:]).model_copy(
+                  update={"provenance": _P3}),
+    _state_case("goal_identical_event_time",
+                "Temporal tie: two goal records share event_time; the later-recorded one "
+                "(a same-day correction) is current.",
+                _BASE + [_r("g2c", "goal", "training_goal", "strength training",
+                            "2026-03-10", recorded="2026-03-10T09:00")],
+                "g2c", "strength training"),
+    _state_case("goal_three_updates_shuffled",
+                "Ordering: three goal updates delivered out of order; the latest (cycling, "
+                "03-20) is current.",
+                [_r("g5", "goal", "training_goal", "cycling", "2026-03-20")]
+                + [r for r in _BASE if r.record_id != "g2"]
+                + [r for r in _BASE if r.record_id == "g2"],
+                "g5", "cycling"),
+    _state_case("goal_update_at_as_of",
+                "Temporal boundary: a goal recorded exactly at as_of is knowable and current.",
+                _BASE + [_r("g6", "goal", "training_goal", "swimming", "2026-04-01")],
+                "g6", "swimming"),
+    # grounding ----------------------------------------------------------------------
+    _rhr_case("rhr_same_time_other_fields",
+              "Grounding trap: sleep and step records share each reading's timestamp; only "
+              "resting_hr may be cited. Expected 384/7 = 54.857.",
+              _RHR_WEEK + [_r(f"q03{d}", "sleep", "sleep_duration", 7.0, f"2026-03-{d}T07:00",
+                              unit="h") for d in _RHR_WEEK_VALUES]
+              + [_r(f"k03{d}", "activity", "steps", 8000.0, f"2026-03-{d}T07:00", unit="steps")
+                 for d in _RHR_WEEK_VALUES],
+              expected=54.857, ids=_RHR_ALL_IDS).model_copy(update={"provenance": _P3}),
+    # answer correctness ---------------------------------------------------------------
+    _state_case("goal_value_superstring",
+                "Answer trap: the current value ('half marathon') contains the stale value "
+                "('marathon') as a substring.",
+                [_r("g1", "goal", "training_goal", "marathon", "2026-01-05"),
+                 _r("g2", "goal", "training_goal", "half marathon", "2026-03-10")],
+                "g2", "half marathon"),
+    # 55+54+56+55+54+56+55 = 385 -> exactly 55.0
+    _rhr_case("rhr_exact_integer_mean",
+              "Answer: the mean is exactly 55.0 bpm.",
+              [r.model_copy(update={"value": v}) for r, v in
+               zip(_RHR_WEEK, [55.0, 54.0, 56.0, 55.0, 54.0, 56.0, 55.0])],
+              expected=55.0, ids=_RHR_ALL_IDS).model_copy(update={"provenance": _P3}),
+    # missing data -----------------------------------------------------------------------
+    # without 03-25 (55): 329/6 = 54.833
+    _rhr_case("rhr_gap_first_day", "Missing data: the first day of the window has no reading.",
+              _week_without("25")[0], expected=54.833,
+              ids=_week_without("25")[1]).model_copy(update={"provenance": _P3}),
+    # without 03-31 (54), never recorded: 330/6 = 55.0
+    _rhr_case("rhr_gap_final_day",
+              "Missing data: the final day has no reading at all (not a late sync).",
+              _week_without("31")[0], expected=55.0,
+              ids=_week_without("31")[1]).model_copy(update={"provenance": _P3}),
+    # without 03-26, 03-28, 03-30: 55+56+57+54 = 222/4 = 55.5 (4 of 7: still at least half)
+    _rhr_case("rhr_gap_three_days",
+              "Missing data: three non-adjacent days are missing (4 of 7 available).",
+              _week_without("26", "28", "30")[0], expected=55.5,
+              ids=_week_without("26", "28", "30")[1]).model_copy(update={"provenance": _P3}),
+    # contradiction ------------------------------------------------------------------------
+    _recovery_case("recovery_subtle_disagreement",
+                   "Contradiction: good wearable signals; the member reports only feeling "
+                   "'tired' (a milder word, still indicating poor recovery).",
+                   "good", [_report("tired")], ["e0415"], "poor").model_copy(
+                       update={"provenance": _P3}),
+    _recovery_case("recovery_mixed_with_report",
+                   "Contradiction boundary: mixed wearable signals plus an 'exhausted' report "
+                   "is not a source conflict (the wearable gives no single reading).",
+                   "mixed", [_report("exhausted")], ["e0415"], "poor").model_copy(
+                       update={"provenance": _P3}),
+    _open_case("recovery_no_data",
+               "Both sources absent: no wearable reading today and no self-report.",
+               RECOVERY_QUESTION, MemberTimeline(member_id="M002", records=_BASELINE),
+               RECOVERY_AS_OF, RECOVERY_NAMES, ["recovered"]),
+    # causal restraint -----------------------------------------------------------------------
+    _relation_case("relation_negative_direction",
+                   "Causal/direction: HRV is higher after shorter nights (negative direction); "
+                   "association only.",
+                   _HRV_INVERSE, [], "negative", (62.0, 47.0), _OBSERVATIONAL + " Phase 3."),
+    # uncertainty / abstention ------------------------------------------------------------------
+    _labelled(next(c for c in CASES if c.case_id == "relation_association_only"),
+              "unc_direct_relationship",
+              "Uncertainty: the association question is fully answerable; a correctly caveated "
+              "answer must not count as an abstention.", "direct_answer_supported"),
+    # 55 + 53 + 54 = 162 -> 54.0 over 3 of 7 days
+    _labelled(_rhr_case("x", "", [r for r in _RHR_WEEK if r.record_id in ("r0325", "r0328",
+                                                                           "r0331")],
+                        expected=54.0, ids=["r0325", "r0328", "r0331"]),
+              "unc_sparse_three_of_seven",
+              "Uncertainty: 3 of 7 days (just under half) need an explicit caveat.",
+              "uncertainty_required"),
+    _labelled(_goal_case("x", "", list(_BASE)), "unc_direct_goal",
+              "Uncertainty: a current-state question with clear evidence must be answered.",
+              "direct_answer_supported"),
 ]

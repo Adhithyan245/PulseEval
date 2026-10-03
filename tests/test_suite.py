@@ -22,7 +22,8 @@ def _failures(agent):
 
 @pytest.mark.parametrize("agent, expected", [
     (HealthAgent(), {}),
-    (HealthAgent(ordering="input_order"), {"goal_update_reversed": {G, A}}),
+    (HealthAgent(ordering="input_order"), {"goal_update_reversed": {G, A},
+                                           "goal_three_updates_shuffled": {G, A}}),
     (HealthAgent(respect_as_of=False), {
         "goal_future_record": {T, G, A},
         "goal_late_arriving_record": {T, G, A},
@@ -39,17 +40,33 @@ def _failures(agent):
         "unc_direct_rhr_7d": {G, A},
         # all-history mean sees 4 readings, so it no longer flags the thin coverage
         "unc_sparse_rhr_7d": {G, A, M, U},
+        "rhr_window_boundaries": {G, A},  # includes the 70 bpm reading a minute outside
+        "rhr_same_time_other_fields": {G, A},
+        "rhr_exact_integer_mean": {G, A},
+        "rhr_gap_first_day": {G, A, M},
+        "rhr_gap_final_day": {G, A, M},
+        "rhr_gap_three_days": {G, A, M},
+        "unc_sparse_three_of_seven": {G, A, M, U},
     }),
     (HealthAgent(report_coverage=False), {
         # right number, right evidence, nothing unknowable -- only coverage misrepresented
         "rhr_mean_7d_late_sync": {M},
         "rhr_mean_7d_gap": {M},
         "unc_sparse_rhr_7d": {M},  # the uncertainty caveat is still given
+        "rhr_gap_first_day": {M},
+        "rhr_gap_final_day": {M},
+        "rhr_gap_three_days": {M},
+        "unc_sparse_three_of_seven": {M},
     }),
     (HealthAgent(impute_missing=True), {
         "rhr_mean_7d_late_sync": {M},  # carried-forward 55 leaves the mean at 55.0 exactly
         "rhr_mean_7d_gap": {G, A, M},
         "unc_sparse_rhr_7d": {M, U},  # imputed "full" week -> caveat dropped
+        # carried-forward values keep the mean within tolerance: only coverage is wrong
+        "rhr_gap_first_day": {M},
+        "rhr_gap_final_day": {M},
+        "rhr_gap_three_days": {G, A, M},  # three carried values move the mean to 55.7
+        "unc_sparse_three_of_seven": {M, U},
     }),
     (HealthAgent(ignore_self_report=True), {
         "recovery_conflict_good_data_exhausted": {G, C},
@@ -59,18 +76,23 @@ def _failures(agent):
         "unc_direct_recovery_agree": {G},
         # hedged single-source answer: confidence is fine, conflict representation is not
         "unc_conflict_recovery": {G, C},
+        "recovery_subtle_disagreement": {G, C},
+        "recovery_mixed_with_report": {G},  # mixed signals: no conflict to mishandle
     }),
     (HealthAgent(dismiss_self_report=True), {
         # cites both sources correctly; only the representation of the conflict is wrong
         "recovery_conflict_good_data_exhausted": {C},
         "recovery_conflict_poor_data_energetic": {C},
         "unc_conflict_recovery": {C, U},  # "you are actually well recovered" is definitive
+        "recovery_subtle_disagreement": {C},
     }),
     (HealthAgent(causal_overclaim=True), {
         # right records, window and numbers; only the causal framing is unjustified.
         # The protocol case supports causation; the no-pattern case states no relationship.
         "relation_association_only": {K},
         "relation_confounded_by_stress": {K},
+        "relation_negative_direction": {K},
+        "unc_direct_relationship": {K},  # overclaiming is not refusing: uncertainty passes
     }),
     (HealthAgent(overconfident=True), {
         # definitive resolution of a real wearable/self-report conflict fails both
@@ -83,13 +105,18 @@ def _failures(agent):
         "unc_ambiguous_recovery": {U},
         "unc_missing_sleep_stages": {U},
         "unc_out_of_scope_illness": {U},
+        "recovery_subtle_disagreement": {C},
+        "unc_sparse_three_of_seven": {U},
     }),
     (HealthAgent(false_abstention=True), {
         # refusing where an answer is supported: answer correctness fails wherever a value is
         # expected, and uncertainty/abstention fails only on direct-answer cases
         **{c.case_id: {A} for c in CASES if c.kind in ("current_state", "numeric", "relationship")
            and c.case_id not in ("rhr_mean_7d_late_sync", "rhr_mean_7d_gap",
-                                 "unc_sparse_rhr_7d", "unc_direct_rhr_7d")},
+                                 "unc_sparse_rhr_7d", "unc_direct_rhr_7d", "rhr_gap_first_day",
+                                 "rhr_gap_final_day", "rhr_gap_three_days",
+                                 "unc_sparse_three_of_seven", "unc_direct_relationship",
+                                 "unc_direct_goal")},
         "rhr_mean_7d_late_sync": {A, M},  # refusal also omits the coverage gap
         "rhr_mean_7d_gap": {A, M},
         "unc_sparse_rhr_7d": {A, M},  # abstaining under uncertainty is not overconfident
@@ -98,6 +125,13 @@ def _failures(agent):
         "recovery_conflict_good_data_exhausted": {C},
         "recovery_conflict_poor_data_energetic": {C},
         "unc_conflict_recovery": {C},
+        "rhr_gap_first_day": {A, M},
+        "rhr_gap_final_day": {A, M},
+        "rhr_gap_three_days": {A, M},
+        "unc_sparse_three_of_seven": {A, M},
+        "unc_direct_relationship": {A, U},
+        "unc_direct_goal": {A, U},
+        "recovery_subtle_disagreement": {C},
     }),
 ], ids=["reference", "input_order", "no_as_of", "no_window", "silent_gaps", "impute",
         "ignore_self_report", "dismiss_self_report", "causal_overclaim", "overconfident",

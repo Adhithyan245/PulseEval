@@ -28,7 +28,7 @@ from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureTyp
 from pulseeval.evaluation.text import causal_claims
 from pulseeval.scenarios import Case, RelationshipCase
 
-CAUSAL_EVALUATOR_VERSION = "0.1.0"
+CAUSAL_EVALUATOR_VERSION = "0.1.1"
 _F = FailureType.CAUSALITY_FAILURE
 
 

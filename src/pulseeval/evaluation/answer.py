@@ -15,15 +15,16 @@ from pulseeval.evaluation.text import affirmed_number, asserts, numbers_with_uni
 from pulseeval.scenarios import (AssessmentCase, Case, NumericCase, OpenQuestionCase,
                                  RelationshipCase, StateCase)
 
-ANSWER_EVALUATOR_VERSION = "0.3.1"
+ANSWER_EVALUATOR_VERSION = "0.3.2"
 _EPS = 1e-9  # absorbs float noise at the tolerance boundary
 
 
 def _state_specs(case: StateCase, trace: AgentTrace) -> list[CheckSpec]:
     other_values = sorted({str(r.value) for r in case.timeline.records
                            if r.name == case.target_name and str(r.value) != case.expected_value})
-    stale_asserted = [v for v in other_values if asserts(trace.final_answer, v)]
-    mentions = value_mentions(trace.final_answer, case.expected_value)
+    known = other_values + [case.expected_value]
+    stale_asserted = [v for v in other_values if asserts(trace.final_answer, v, known)]
+    mentions = value_mentions(trace.final_answer, case.expected_value, known)
     return [
         CheckSpec(
             name="answer_asserts_current_value", failure_type=FailureType.TEMPORAL_FAILURE,

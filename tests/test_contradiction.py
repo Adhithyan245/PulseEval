@@ -34,9 +34,10 @@ def _failed(result):
 def test_hand_labels_mark_exactly_the_conflict_cases():
     assert {c.case_id for c in ASSESSMENTS if c.conflict} == {
         "recovery_conflict_good_data_exhausted", "recovery_conflict_poor_data_energetic",
-        "unc_conflict_recovery"}
-    # mixed wearable signals with no self-report are ambiguous, not a conflict (ADR-012)
+        "unc_conflict_recovery", "recovery_subtle_disagreement"}
+    # mixed wearable signals are ambiguous, not a source conflict, with or without a report
     assert not BY_ID["unc_ambiguous_recovery"].conflict
+    assert not BY_ID["recovery_mixed_with_report"].conflict
 
 
 def test_intensified_verdict_after_flagging_conflict_is_unsupported_resolution():

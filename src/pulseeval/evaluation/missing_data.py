@@ -25,7 +25,7 @@ from pulseeval.evaluation.schemas import CheckSpec, EvaluationResult, FailureTyp
 from pulseeval.evaluation.text import coverage_claims, dated_values
 from pulseeval.scenarios import Case, NumericCase
 
-MISSING_DATA_EVALUATOR_VERSION = "0.1.1"
+MISSING_DATA_EVALUATOR_VERSION = "0.1.2"
 _M = FailureType.MISSING_DATA_FAILURE
 
 

@@ -20,7 +20,7 @@ _STOPWORDS = {"a", "an", "the", "for", "of", "and", "to", "my", "your"}
 _NEGATION = {"not", "no", "never", "none", "neither", "nor", "without",
              "stopped", "quit", "dropped", "abandoned"}
 _NEGATION_PHRASES = ("no longer", "instead of", "rather than")
-_PAST = {"previously", "formerly", "originally", "earlier", "former", "prior"}
+_PAST = {"previously", "previous", "formerly", "originally", "earlier", "former", "prior"}
 _PAST_PHRASES = ("used to", "in the past")
 _HEDGE = {"maybe", "might", "perhaps", "possibly", "probably", "unclear", "unsure",
           "may", "could", "seems", "likely"}
@@ -57,17 +57,33 @@ def _mentions(clause: str, value: str) -> bool:
     return n > 0 and any(have[i:i + n] == wanted for i in range(len(have) - n + 1))
 
 
+# A sentence-initial subordinate phrase ends at its first comma (Phase 3 fix): in "Despite your
+# earlier marathon goal, your goal is weight training" the past cue must not reach the main clause.
+_LEADING_SUBORDINATE = re.compile(r"^\s*(?:despite|while|although|though|even though|whereas)\b"
+                                  r"[^,]*,", re.IGNORECASE)
+
+
+def _normalize_space(answer: str) -> str:
+    """Collapse whitespace runs (Phase 3 fix): multi-word patterns use single spaces."""
+    return re.sub(r"\s+", " ", answer).strip()
+
+
 def clauses(answer: str) -> list[str]:
+    answer = _normalize_space(answer)
     answer = _TRANSITION.sub(lambda m: f"{m['verb']}{m['pre']} formerly{m['old']}; now ", answer)
     parts = []
     for sentence in re.split(r"[;!?]|\.(?!\d)", answer):  # keep decimals like 54.9 intact
-        parts.extend(p.strip() for p in _CLAUSE_START.split(sentence) if p.strip())
+        lead = _LEADING_SUBORDINATE.match(sentence)
+        pieces = [sentence[:lead.end()], sentence[lead.end():]] if lead else [sentence]
+        for piece in pieces:
+            parts.extend(p.strip() for p in _CLAUSE_START.split(piece) if p.strip())
     return parts
 
 
 def _polarity(clause: str) -> Polarity:
     lower = clause.lower()
-    toks = set(_tokens(clause))
+    # raw words too: plural stemming turns cue words like "previous" into "previou" (Phase 3 fix)
+    toks = set(_tokens(clause)) | set(re.findall(r"[a-z']+", lower))
     if toks & _NEGATION or any(t.endswith("n't") for t in toks) \
             or any(p in lower for p in _NEGATION_PHRASES):
         return "negated"
@@ -78,13 +94,27 @@ def _polarity(clause: str) -> Polarity:
     return "affirmed"
 
 
-def value_mentions(answer: str, value: str) -> list[Polarity]:
-    """Polarity of every clause in `answer` that mentions `value`."""
+def _mask_longer_values(answer: str, value: str, among: list[str]) -> str:
+    """Remove mentions of longer known values that contain `value` (Phase 3 fix), so that
+    'marathon' is not found inside 'half marathon'."""
+    size = len([t for t in _tokens(value) if t not in _STOPWORDS])
+    for other in sorted(among, key=len, reverse=True):
+        longer = len([t for t in _tokens(other) if t not in _STOPWORDS]) > size
+        if longer and _mentions(other, value):
+            answer = re.sub(re.escape(other), " ", answer, flags=re.IGNORECASE)
+    return answer
+
+
+def value_mentions(answer: str, value: str, among: list[str] | None = None) -> list[Polarity]:
+    """Polarity of every clause in `answer` that mentions `value`. `among`: the other known
+    values of the same field, whose longer forms must not count as mentions of `value`."""
+    if among:
+        answer = _mask_longer_values(_normalize_space(answer), value, among)
     return [_polarity(c) for c in clauses(answer) if _mentions(c, value)]
 
 
-def asserts(answer: str, value: str) -> bool:
-    return "affirmed" in value_mentions(answer, value)
+def asserts(answer: str, value: str, among: list[str] | None = None) -> bool:
+    return "affirmed" in value_mentions(answer, value, among)
 
 
 def numbers_with_unit(answer: str, unit: str) -> list[tuple[float, Polarity]]:
@@ -236,7 +266,7 @@ class ContradictionClaims(BaseModel):
 def contradiction_claims(answer: str) -> ContradictionClaims:
     """Deterministic, lexical; polarity-aware per clause ("do not conflict" is no conflict
     claim, "don't ignore how you feel" is no dismissal)."""
-    lower = answer.lower()
+    lower = _normalize_space(answer).lower()
     claims = ContradictionClaims(mentions_wearable=bool(_WEARABLE_SOURCE.search(lower)),
                                  mentions_self_report=bool(_SELF_SOURCE.search(lower)))
     for clause in clauses(answer):
@@ -390,8 +420,11 @@ _REFUSAL = re.compile(
     r"(?:can't|cannot|can not|unable to|not able to)\s+"
     r"(?:determine|tell|answer|assess|say|establish|know|conclude)|"
     r"(?:don't|do not|doesn't|does not)\s+have\s+(?:enough\s+)?(?:[\w-]+\s+){0,2}"
-    r"(?:data|information|records)|"
-    r"(?:do|does|did)\s+not\s+establish|(?:doesn't|don't|didn't)\s+establish|"
+    r"(?:data|information|records))\b")
+# Qualifications limit a claim without declining the question (Phase 3 fix: these were
+# refusals, which made a caveated but complete answer look like an abstention).
+_QUALIFICATION = re.compile(
+    r"\b(?:(?:do|does|did)\s+not\s+establish|(?:doesn't|don't|didn't)\s+establish|"
     r"(?:would not|wouldn't)\s+conclude|(?:would|will)\s+need|would require|"
     r"need more (?:data|information))\b")
 _LIMIT_PLAIN = re.compile(r"\b(?:uncertain|unclear|ambiguous|tentative|preliminary|limited data|"
@@ -427,6 +460,7 @@ def certainty_claims(answer: str, conclusion_terms: list[str]) -> CertaintyClaim
         hedged = bool(words & _CAUSAL_HEDGES)
         refusal = bool(_REFUSAL.search(text))
         limitation = (refusal or bool(_UNCERTAIN_MARKER.search(text))
+                      or bool(_QUALIFICATION.search(text))
                       or bool(_NEGATED_CERTAINTY.search(text))
                       or (not negated and bool(_LIMIT_PLAIN.search(text))))
         if refusal:
@@ -440,8 +474,12 @@ def certainty_claims(answer: str, conclusion_terms: list[str]) -> CertaintyClaim
         def hypothetical_before(pos: int) -> bool:
             return bool(_HYPOTHETICAL_MARKER.search(text[:pos]))
 
-        claims.certainty_markers += [m.group(0) for m in _CERTAIN_NEGATIVE.finditer(text)]
-        if not negated:
+        # With conclusion terms, certainty counts only where it is about the conclusion
+        # (Phase 3 fix): "your resting HR is clearly higher" is a supported observation.
+        about_conclusion = conclusion is None or bool(conclusion.search(text))
+        if about_conclusion:
+            claims.certainty_markers += [m.group(0) for m in _CERTAIN_NEGATIVE.finditer(text)]
+        if about_conclusion and not negated:
             claims.certainty_markers += [m.group(0) for m in _CERTAIN.finditer(text)
                                          if not hypothetical_before(m.start())]
         if conclusion and not hedged:

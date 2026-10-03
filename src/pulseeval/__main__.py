@@ -5,33 +5,28 @@ from __future__ import annotations
 import argparse
 import json
 
-from pulseeval.agent import AGENT_VERSION, HealthAgent
+from pulseeval.agent import AGENT_VERSION
+from pulseeval.benchmark import AGENT_CONFIGS, render
 from pulseeval.evaluation import run_suite
 from pulseeval.phia import phia_cases
 from pulseeval.scenarios import CASES, SCENARIOS_VERSION
 
-AGENTS = {
-    "reference": HealthAgent(),
-    "input_order": HealthAgent(ordering="input_order"),  # fault: assumes sorted input
-    "no_as_of": HealthAgent(respect_as_of=False),  # fault: leaks future/late records
-    "no_window": HealthAgent(respect_window=False),  # fault: aggregates all history
-    "silent_gaps": HealthAgent(report_coverage=False),  # fault: never mentions missing days
-    "impute": HealthAgent(impute_missing=True),  # fault: carries values into missing days
-    "ignore_self_report": HealthAgent(ignore_self_report=True),  # fault: wearable data only
-    "dismiss_self_report": HealthAgent(dismiss_self_report=True),  # fault: data overrides report
-    "causal_overclaim": HealthAgent(causal_overclaim=True),  # fault: association stated as cause
-    "overconfident": HealthAgent(overconfident=True),  # fault: definitive despite thin evidence
-    "false_abstention": HealthAgent(false_abstention=True),  # fault: refuses supported answers
-}
+AGENTS = AGENT_CONFIGS
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="pulseeval")
     parser.add_argument("--agent", choices=AGENTS, default="reference")
     parser.add_argument("--json", action="store_true", help="print full results as JSON")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="print the consolidated benchmark report (Markdown) and exit")
     parser.add_argument("--phia", metavar="DIR",
                         help="also run PHIA-derived cases from a local PHIA data directory")
     args = parser.parse_args()
+
+    if args.benchmark:
+        print(render(), end="")
+        return
 
     cases = CASES + (phia_cases(args.phia) if args.phia else [])
     results = run_suite(AGENTS[args.agent], cases)

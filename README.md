@@ -56,12 +56,45 @@ Case (timeline + question + as_of + expectation + provenance)
 | `evaluation/causal.py` | Causal restraint: causal language vs the case's labelled causal support |
 | `evaluation/uncertainty.py` | Uncertainty / abstention: expressed certainty vs the case's labelled evidence sufficiency |
 | `evaluation/text.py` | Deterministic answer-text analysis: clauses, negated/past/hedged/affirmed mentions, number+unit and coverage-claim extraction |
+| `benchmark.py` | Runs every agent configuration over the benchmark and renders `BENCHMARK.md` |
 
 ## Setup
+
+Requires Python 3.10 or later. The only runtime dependency is pydantic; pytest is needed for the tests.
+
+```bash
+python -m venv .venv
+```
+
+Activate it with `.venv\Scripts\activate` on Windows or `source .venv/bin/activate` elsewhere, then:
 
 ```bash
 pip install -e ".[dev]"
 ```
+
+## Reproducing the benchmark
+
+```bash
+python -m pytest
+```
+
+Without the optional PHIA data, expect **424 passed, 5 skipped, 7 xfailed**:
+- **Skipped:** the 5 tests that need PHIA data.
+- **xfailed:** the 7 documented parser language boundaries.
+
+With PHIA data in `data/raw/phia/`, expect 429 passed and 7 xfailed.
+
+```bash
+python -m pulseeval --benchmark
+```
+
+This prints the consolidated report, and its output is byte-identical to the committed [BENCHMARK.md](BENCHMARK.md). A test regenerates it and fails if they differ. The report contains:
+- dimension applicability and pass/fail;
+- each fault's intended vs observed failures;
+- the independence and co-failure matrices;
+- failure analysis built from live evaluator output.
+
+The run is deterministic: there is no randomness, no wall-clock dependence, and no network access. This was verified from a clean copy of the repository in a fresh virtual environment.
 
 ## Usage
 
@@ -81,22 +114,33 @@ To include PHIA-derived cases, place PHIA's `synthetic_wearable_users/summary_df
 python -m pulseeval --phia data/raw/phia
 ```
 
-```bash
-python -m pytest
-```
+## Benchmark methodology
+
+- **Cases:** 41 synthetic, deterministic cases. Each targets a specific behaviour or brittle assumption, such as exact window boundaries, tied timestamps, a current value that contains a stale value, a missing first or last day, a subtle disagreement, mixed signals, an inverse relationship, or a caveated but complete answer. Every case records its provenance.
+- **Agents:** a reference agent plus 10 fault configurations, each declaring which dimensions it should fail and which knock-on failures are acceptable. The benchmark checks observed failures against these declarations.
+- **Independence:** for each dimension, PulseEval looks for an (agent, case) where it is the *only* failing dimension, and one where it passes while another fails.
+  - Every co-failing pair of dimensions is classified as either an intentional overlap or a shared root cause.
+  - The one intentional overlap: resolving a real wearable/self-report conflict definitively fails both contradiction handling and uncertainty.
+- **Hardening:**
+  - an adversarial wording matrix, covering negation, hypotheticals, quotes, concessive clauses, mixed certainty and capitalisation;
+  - metamorphic invariants: record order, irrelevant records, citation order, whitespace and case, repeated runs;
+  - provenance checks;
+  - mutation checks, where each critical rule is deliberately broken and the tests must catch it (14 of 14 caught).
+
+**What the results mean:** a pass means the agent's answer is consistent with the case's labelled evidence semantics on that dimension. It does **not** mean the answer is medically correct. The agent under test is rule-based, so the benchmark characterises the evaluators, not real agents.
 
 ## Example evaluation (actual output, truncated)
 
 ```text
-Agent: overconfident (v0.6.0) | Scenarios: v0.7.0
-Cases evaluated: 26
-temporal_consistency (v0.3.0): 26/26 (100%)
-evidence_grounding (v0.4.0): 26/26 (100%)
-answer_correctness (v0.3.1): 15/15 (100%)
-missing_data (v0.1.1): 7/7 (100%)
-contradiction_handling (v0.1.1): 6/9 (67%)
-causal_restraint (v0.1.0): 4/4 (100%)
-uncertainty_abstention (v0.1.0): 2/7 (29%)
+Agent: overconfident (v0.6.0) | Scenarios: v0.8.0
+Cases evaluated: 41
+temporal_consistency (v0.3.0): 41/41 (100%)
+evidence_grounding (v0.4.1): 41/41 (100%)
+answer_correctness (v0.3.2): 27/27 (100%)
+missing_data (v0.1.2): 12/12 (100%)
+contradiction_handling (v0.1.2): 7/11 (64%)
+causal_restraint (v0.1.1): 6/6 (100%)
+uncertainty_abstention (v0.1.1): 5/11 (45%)
 
 [FAIL] unc_sparse_rhr_7d  (temporal=PASS evidence=PASS answer=PASS missing=PASS uncertainty=FAIL)
     UNCERTAINTY_FAILURE [uncertainty_abstention/uncertainty_expressed] (medium): Label: uncertainty_required. ...
@@ -112,7 +156,7 @@ Pass rates are over the cases each dimension applies to:
 
 ## Data and ground truth
 
-- **Fixture:** 17 hand-written synthetic cases.
+- **Fixture:** 41 hand-written synthetic cases. The first 24 are described below; the 17 Phase 3 hardening cases are listed, with the assumption each one targets, in [BENCHMARK.md](BENCHMARK.md) and `PROJECT_CONTEXT.md` §13.
   - Seven cover goal updates, temporal reversal, future and late-arriving records, 7-day means, a late-synced reading, and a missing day.
   - Six are recovery assessments that pair wearable HRV and resting HR with a **synthetic self-report** ("exhausted", "rested", …): two conflicts, two agreements, a report logged after the question time, and a stale report.
   - Four are sleep/HRV relationship questions over 10 paired days:
@@ -135,7 +179,14 @@ Pass rates are over the cases each dimension applies to:
 ## Limitations
 
 - The agent is rule-based, not an LLM. It validates the evaluation pipeline and does not measure real agent behaviour.
-- There are only 26 cases, and the self-reports, relationships and certainty labels are synthetic. Results say nothing about real agents.
+- **What PulseEval is not:** PulseEval is an evaluation framework for longitudinal health-agent behaviour. It does not establish clinical truth, estimate clinical risk, perform causal inference, or provide medical advice.
+- There are 41 synthetic cases plus 2 PHIA-derived ones. The self-reports, relationships and certainty labels are synthetic. Results say nothing about real agents.
+- **Parser language boundaries** (documented as strict expected-failures in `tests/test_wording.py`):
+  - reported speech ("your coach said …") is treated as the agent's own claim;
+  - double negation isn't resolved;
+  - conflict or uncertainty expressed only through unlisted wording ("opposite directions", "grain of salt") is missed;
+  - single-quoted phrases aren't masked.
+- Temporal consistency checks what was knowable at the question time. Record-ordering mistakes show up in grounding and answer correctness instead.
 - Answer analysis uses lexical English heuristics. It misses paraphrases and cross-sentence negation, and fails answers it cannot parse rather than passing them.
 - Missing-data handling assumes one expected observation per day, and its coverage parsing is lexical.
 - Contradiction handling detects conflict, dismissal and verdict wording lexically. Its "good / poor recovery" labels are a fixture convention, not a physiological standard.
