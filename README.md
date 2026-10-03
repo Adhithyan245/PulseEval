@@ -1,66 +1,133 @@
 # PulseEval
 
-**Longitudinal reliability evaluation for personal-health agents.**
+**A deterministic evaluation framework for testing longitudinal health-agent behaviour across temporal consistency, evidence grounding, answer correctness, missing-data handling, contradiction handling, causal restraint, and uncertainty/abstention.**
 
-Personal-health agents reason over wearable and contextual data that changes over time. Standard QA metrics only grade the final answer. That misses failures such as citing a goal that has since been superseded, leaking data the agent could not yet have known, or averaging over the wrong window. PulseEval is a small, deterministic-first evaluation layer. It inspects an agent's **structured trace** and scores every case on independent dimensions:
+> **Scope:** PulseEval evaluates whether an agent's answer is behaviourally consistent with structured longitudinal evidence and the semantics of the evaluation case. It does **not** establish clinical truth, estimate clinical risk, perform causal inference, or provide medical advice. It is an evaluation framework, not a medical system.
 
-- **temporal consistency:** was anything retrieved or cited unknowable at the time of the question?
-- **evidence grounding:** is the cited evidence the right evidence for the claim? It checks that records exist, are required, relevant and in the window, support the claim, and don't contradict it.
-- **answer correctness:** does the final text assert the right thing? Negated, hedged and stale values don't count.
-- **missing-data handling** (windowed numeric questions only): does the answer represent coverage accurately? Missing data is not a failure. Hiding a gap, claiming a complete window, or implying a missing day was observed or filled in is.
-- **contradiction handling** (recovery assessments only): when wearable signals and the member's self-report disagree, does the answer acknowledge both, say they conflict, and avoid dismissing either or resolving the conflict by fiat? When they agree, it must not invent a conflict. The evaluator never decides which source is right.
-- **causal restraint** (relationship questions only): is the answer's causal language justified by what the case's records establish?
-  - "HRV was lower on days when you slept less" passes when the data shows only an association.
-  - "Less sleep caused your HRV to drop" fails, unless the case is labelled causal-supported by specific records, such as an assigned sleep protocol.
-  - Negated, uncertain, hypothetical and quoted causal wording ("this does not mean that…", "we cannot tell whether…") is not treated as a claim.
-  - PulseEval judges language against labelled evidence semantics. It does not perform causal inference.
-- **uncertainty / abstention** (cases labelled with how much certainty the evidence supports): does the agent's expressed certainty match?
-  - Where the evidence supports a direct answer, the agent must not refuse; cautious wording is fine.
-  - Where evidence is thin, ambiguous or conflicting, it must express that and avoid "definitely" / "clearly" framing.
-  - Where the evidence cannot establish the conclusion ("Am I getting sick?" from heart-rate data), it must abstain or say so.
-  - Strong words inside negated, hypothetical or quoted statements don't count ("I would not conclude that you are definitely getting sick").
-  - This is a behavioural check of the agent. It does not estimate statistical confidence, clinical risk or medical probability.
+## Why
 
-A trace can fail one dimension and pass the others. For example:
-- An agent that averages over the wrong window fails grounding and answer correctness but passes temporal consistency.
-- An agent that reports the correct 13-day mean as a "14-day average" fails only missing-data handling.
-- An agent that cites both sources but says "you reported feeling exhausted, but your data shows you are actually well recovered" fails only contradiction handling.
-- An agent that uses the right records, window and group means but says "sleeping less caused your HRV to drop" about an observational pattern fails only causal restraint.
-- An agent that correctly reports a 2-of-7-day average with its coverage, then adds "this is definitely your true average for the week", fails only uncertainty/abstention.
-- Refusing a question the evidence fully supports also fails only uncertainty/abstention.
+Evaluating a health agent that reasons over weeks of wearable data is not just a question of whether its answer contains the right number. An agent can produce a plausible answer and still:
 
-> Research/engineering prototype. Not a medical device. It makes no diagnostic, treatment, or clinical claims.
+- use the wrong time window, or data it could not yet have known;
+- cite stale or irrelevant evidence;
+- silently treat an incomplete window as complete, or fill in missing days;
+- ignore or dismiss a self-report that conflicts with the wearable data;
+- turn an observed association into an unsupported causal claim;
+- sound certain when the evidence is thin, or refuse when it is sufficient.
+
+PulseEval evaluates each of these behaviours **separately**, so that a single failure is attributed to the property it actually violates.
+
+## Evaluation dimensions
+
+| # | Dimension | What it checks | Applies to |
+|---|---|---|---|
+| 1 | Temporal consistency | Nothing retrieved or cited was unknowable at the question time (recorded later, or in the future). | every case |
+| 2 | Evidence grounding | Cited records exist, include the required ones, are the relevant field, fall inside the valid window, support the claim, and are not silently contradictory. | every case |
+| 3 | Answer correctness | The text affirms the correct current value (not a negated, hedged or stale one), or a number within tolerance. | value questions |
+| 4 | Missing-data handling | Coverage is represented accurately: gaps acknowledged, no false "complete window", no imputed or invented observations. Missing data itself is not a failure. | windowed numeric questions |
+| 5 | Contradiction handling | When wearable data and self-report disagree, both are acknowledged, the conflict is named, neither is dismissed, and it is not resolved by fiat; no conflict is invented when they agree. | recovery assessments |
+| 6 | Causal restraint | Causal language is used only when the case labels causal support (backed by specific records); association, negated, hypothetical and quoted causal wording are not claims. | relationship questions |
+| 7 | Uncertainty / abstention | Expressed certainty matches the case's labelled evidence sufficiency: answer when supported, qualify when evidence is thin, ambiguous or conflicting, abstain when the conclusion cannot be established. | certainty-labelled cases |
+
+A dimension that does not apply to a case returns no result and is not counted in its pass rate. The dimensions are **separately evaluated behavioural properties**, not statistically independent measures; their overlaps are measured and documented (see [BENCHMARK.md](BENCHMARK.md)).
 
 ## Architecture
 
 ```text
-Case (timeline + question + as_of + expectation + provenance)
-  → HealthAgent.answer()       system under test
-  → AgentTrace                 retrieved context, tool calls, evidence, answer, abstention
-  → temporal_consistency | evidence_grounding | answer_correctness | missing_data
-    | contradiction_handling | causal_restraint | uncertainty_abstention
-  → EvaluationResult           checks + typed failures, per case and applicable evaluator
+Longitudinal case  (timeline of timestamped records + question + as-of time)
+        |
+Structured provenance + expected semantics  (hand-labelled, never computed by the agent)
+        |
+Deterministic agent response  ->  AgentTrace  (retrieved records, tool calls,
+        |                                       cited evidence, answer, abstention)
+        v
++-----------------------------------------+
+|  Separately evaluated behavioural       |
+|  dimensions (deterministic checks)      |
+|    temporal        grounding            |
+|    answer          missing data         |
+|    contradiction   causal restraint     |
+|    uncertainty / abstention             |
++-----------------------------------------+
+        |
+Per-dimension PASS / FAIL / N/A, each failure typed and explained
+        |
+Benchmark: every agent configuration x every case  ->  BENCHMARK.md
 ```
 
 | Module | Responsibility |
 |---|---|
-| `timeline.py` | Canonical `Record` / `MemberTimeline` with `event_time` vs `recorded_at` as-of semantics |
-| `agent.py` | Small deterministic agent (the system under test) and its `AgentTrace` |
-| `scenarios.py` | Synthetic fixture cases with hand-derived expectations |
-| `phia.py` | Minimal PHIA adapter: one local synthetic-user CSV → timeline + recomputed numeric cases |
-| `evaluation/temporal.py` | Temporal consistency (knowability at as_of) |
-| `evaluation/grounding.py` | Evidence grounding |
-| `evaluation/answer.py` | Answer correctness for current-state and numeric questions |
-| `evaluation/missing_data.py` | Missing-data handling: stated coverage vs actual coverage of the requested window |
-| `evaluation/contradiction.py` | Contradiction handling: wearable signals vs self-report |
-| `evaluation/causal.py` | Causal restraint: causal language vs the case's labelled causal support |
-| `evaluation/uncertainty.py` | Uncertainty / abstention: expressed certainty vs the case's labelled evidence sufficiency |
-| `evaluation/text.py` | Deterministic answer-text analysis: clauses, negated/past/hedged/affirmed mentions, number+unit and coverage-claim extraction |
-| `benchmark.py` | Runs every agent configuration over the benchmark and renders `BENCHMARK.md` |
+| `timeline.py` | Records with `event_time` vs `recorded_at` as-of semantics |
+| `scenarios.py` | Synthetic cases with hand-derived expectations and provenance |
+| `phia.py` | Optional PHIA adapter: one local CSV → timeline + recomputed cases |
+| `agent.py` | Small rule-based agent (the system under test) with fault switches |
+| `evaluation/` | One module per dimension, plus `text.py` (clause-level answer-text analysis) and `schemas.py` |
+| `benchmark.py` | Runs all agent configurations, analyses faults/independence/overlaps, renders `BENCHMARK.md` |
 
-## Setup
+## Benchmark
 
-Requires Python 3.10 or later. The only runtime dependency is pydantic; pytest is needed for the tests.
+The authoritative, generated results are in **[BENCHMARK.md](BENCHMARK.md)**.
+
+- **43 cases:** 41 synthetic (in the benchmark report) and 2 PHIA-derived (checked by the test suite when the PHIA data is present locally).
+- **7 dimensions.** Applicable synthetic cases per dimension:
+
+  | temporal | grounding | answer | missing data | contradiction | causal | uncertainty |
+  |---|---|---|---|---|---|---|
+  | 41 | 41 | 27 | 12 | 11 | 6 | 11 |
+
+- **11 agent configurations:** a reference agent plus 10 injected faults (`input_order`, `no_as_of`, `no_window`, `silent_gaps`, `impute`, `ignore_self_report`, `dismiss_self_report`, `causal_overclaim`, `overconfident`, `false_abstention`).
+  - The reference agent passes every applicable dimension on every case.
+  - Each fault declares which dimensions it should fail and which knock-on failures are acceptable. The benchmark verifies this: no fault produces a missing or unexpected failure.
+- **Independence:** every dimension has a case where it is the only failure, and a case where it passes while another fails. For temporal consistency, the only-failure witness is a constructed trace, because under the agent faults a temporal leak always also breaks grounding or the answer.
+- **Overlaps:** every pair of dimensions that ever fails together is classified as either an intentional overlap or a shared root cause.
+  - The one intentional overlap: resolving a genuine wearable/self-report conflict definitively fails both contradiction handling and uncertainty.
+
+A pass means the answer is consistent with the case's labelled evidence semantics on that dimension. It does not mean the answer is medically correct. Because the agent is rule-based, the benchmark characterises the **evaluators**, not real agents.
+
+### Representative failures
+
+All examples are from the generated benchmark.
+
+| Agent behaviour (case) | Caught by | What else happened |
+|---|---|---|
+| Ignores the member's self-report and cites only wearable data (`recovery_agree_good`) | grounding | Temporally correct, and no conflict to mishandle: only grounding fails. |
+| Correctly reports a 2-of-7-day average with its coverage, then calls it "definitely your true average" (`unc_sparse_rhr_7d`) | uncertainty | Grounded, correct value, gap acknowledged: only the certainty level is wrong. |
+| Fills a missing first day with an older reading and claims full coverage (`rhr_gap_first_day`) | missing data | Mean still within tolerance and supported by the cited readings: only coverage is misrepresented. |
+| Right records and group means, but "sleeping less caused your HRV to drop" (`relation_association_only`) | causal restraint | Everything else passes; the case labels association only. |
+| Cites both sources, then "you are actually well recovered" despite reported exhaustion (`recovery_conflict_good_data_exhausted`) | contradiction | Grounding passes (both sources cited); the conflict is dismissed. |
+| Uses a reading synced after the question time (`rhr_mean_7d_late_sync`) | temporal | Answer and missing data fail as consequences; grounding passes (the reading is relevant and in-window). |
+
+## Hardening (Phase 3)
+
+The seven evaluators were stress-tested rather than only unit-tested:
+
+- **Adversarial wording matrix:** negation, hypotheticals, quotes, concessive clauses ("despite", "while"), mixed certainty within one answer, capitalisation. Unsupported patterns are kept as strict expected-failures, so the boundary is explicit.
+- **Fault-model and independence validation**, as described above.
+- **Metamorphic invariants:** none of these change any outcome:
+  - record order (except for the agent fault that depends on it by design);
+  - unrelated records outside every window;
+  - citation order;
+  - letter case and whitespace;
+  - repeated runs and case order.
+- **Mutation testing:** 14 of 14 deliberate breakages of critical rules were caught. The rules covered temporal boundaries, grounding windows, missing-data and contradiction detection, and causal and uncertainty negation and refusal handling.
+- **Provenance checks:**
+  - every failure traces back to a case, an agent configuration and real records;
+  - there is no randomness or wall-clock dependence;
+  - PHIA labels are never read;
+  - runs with and without PHIA agree on all synthetic cases.
+- **Clean-copy reproduction** in a fresh virtual environment.
+
+The hardening found and fixed **six genuine evaluator defects**, each now pinned by a regression test:
+1. A current value containing a stale value ("half marathon" vs "marathon") was misread.
+2. A caveat ("does not establish …") was treated as a refusal.
+3. A leading concessive clause swallowed the main clause.
+4. Word stemming hid a cue word.
+5. Certainty about a supported observation was penalised.
+6. Extra whitespace broke multi-word patterns.
+
+## Reproducing
+
+Requires **Python 3.10 or later**. The only runtime dependency is pydantic; pytest is used for the tests.
 
 ```bash
 python -m venv .venv
@@ -72,124 +139,76 @@ Activate it with `.venv\Scripts\activate` on Windows or `source .venv/bin/activa
 pip install -e ".[dev]"
 ```
 
-## Reproducing the benchmark
-
 ```bash
 python -m pytest
 ```
 
 Without the optional PHIA data, expect **424 passed, 5 skipped, 7 xfailed**:
-- **Skipped:** the 5 tests that need PHIA data.
-- **xfailed:** the 7 documented parser language boundaries.
+- **5 skipped:** the tests that need PHIA data.
+- **7 xfailed:** the documented parser language boundaries.
 
-With PHIA data in `data/raw/phia/`, expect 429 passed and 7 xfailed.
+With PHIA data present, expect 429 passed and 7 xfailed. Both also hold with `--strict-markers`.
 
 ```bash
 python -m pulseeval --benchmark
 ```
 
-This prints the consolidated report, and its output is byte-identical to the committed [BENCHMARK.md](BENCHMARK.md). A test regenerates it and fails if they differ. The report contains:
-- dimension applicability and pass/fail;
-- each fault's intended vs observed failures;
-- the independence and co-failure matrices;
-- failure analysis built from live evaluator output.
+This prints the benchmark report, and its output is byte-identical to the committed `BENCHMARK.md`. A test regenerates the report and fails if they differ. The run is deterministic and needs no network access.
 
-The run is deterministic: there is no randomness, no wall-clock dependence, and no network access. This was verified from a clean copy of the repository in a fresh virtual environment.
-
-## Usage
+Other commands:
 
 ```bash
 python -m pulseeval --agent reference
 ```
 
 ```bash
-python -m pulseeval --agent no_window --json
+python -m pulseeval --agent overconfident --json
 ```
 
-`input_order`, `no_as_of`, `no_window`, `silent_gaps`, `impute`, `ignore_self_report`, `dismiss_self_report`, `causal_overclaim`, `overconfident` and `false_abstention` are fault-injected agent configs. They exist to show that each evaluator detects the behaviour it should.
+`--agent` accepts any of the 11 configurations; `--json` prints the full results.
 
-To include PHIA-derived cases, place PHIA's `synthetic_wearable_users/summary_df_465.csv` in `data/raw/phia/` (it is not distributed with this repo) and run:
+**Optional PHIA data:** to include the two PHIA-derived cases, place PHIA's `synthetic_wearable_users/summary_df_465.csv` in `data/raw/phia/`. The file is not distributed with this repository and is git-ignored. Then run:
 
 ```bash
 python -m pulseeval --phia data/raw/phia
 ```
 
-## Benchmark methodology
+## Data and provenance
 
-- **Cases:** 41 synthetic, deterministic cases. Each targets a specific behaviour or brittle assumption, such as exact window boundaries, tied timestamps, a current value that contains a stale value, a missing first or last day, a subtle disagreement, mixed signals, an inverse relationship, or a caveated but complete answer. Every case records its provenance.
-- **Agents:** a reference agent plus 10 fault configurations, each declaring which dimensions it should fail and which knock-on failures are acceptable. The benchmark checks observed failures against these declarations.
-- **Independence:** for each dimension, PulseEval looks for an (agent, case) where it is the *only* failing dimension, and one where it passes while another fails.
-  - Every co-failing pair of dimensions is classified as either an intentional overlap or a shared root cause.
-  - The one intentional overlap: resolving a real wearable/self-report conflict definitively fails both contradiction handling and uncertainty.
-- **Hardening:**
-  - an adversarial wording matrix, covering negation, hypotheticals, quotes, concessive clauses, mixed certainty and capitalisation;
-  - metamorphic invariants: record order, irrelevant records, citation order, whitespace and case, repeated runs;
-  - provenance checks;
-  - mutation checks, where each critical rule is deliberately broken and the tests must catch it (14 of 14 caught).
-
-**What the results mean:** a pass means the agent's answer is consistent with the case's labelled evidence semantics on that dimension. It does **not** mean the answer is medically correct. The agent under test is rule-based, so the benchmark characterises the evaluators, not real agents.
-
-## Example evaluation (actual output, truncated)
-
-```text
-Agent: overconfident (v0.6.0) | Scenarios: v0.8.0
-Cases evaluated: 41
-temporal_consistency (v0.3.0): 41/41 (100%)
-evidence_grounding (v0.4.1): 41/41 (100%)
-answer_correctness (v0.3.2): 27/27 (100%)
-missing_data (v0.1.2): 12/12 (100%)
-contradiction_handling (v0.1.2): 7/11 (64%)
-causal_restraint (v0.1.1): 6/6 (100%)
-uncertainty_abstention (v0.1.1): 5/11 (45%)
-
-[FAIL] unc_sparse_rhr_7d  (temporal=PASS evidence=PASS answer=PASS missing=PASS uncertainty=FAIL)
-    UNCERTAINTY_FAILURE [uncertainty_abstention/uncertainty_expressed] (medium): Label: uncertainty_required. ...
-    UNCERTAINTY_FAILURE [uncertainty_abstention/no_unjustified_certainty] (high): Label: uncertainty_required. ...
-```
-
-Pass rates are over the cases each dimension applies to:
-- Answer correctness skips open assessments.
-- Missing-data covers only windowed numeric questions.
-- Contradiction handling covers only assessments.
-- Causal restraint covers only relationship questions.
-- Uncertainty/abstention covers only cases labelled with a certainty level.
-
-## Data and ground truth
-
-- **Fixture:** 41 hand-written synthetic cases. The first 24 are described below; the 17 Phase 3 hardening cases are listed, with the assumption each one targets, in [BENCHMARK.md](BENCHMARK.md) and `PROJECT_CONTEXT.md` §13.
-  - Seven cover goal updates, temporal reversal, future and late-arriving records, 7-day means, a late-synced reading, and a missing day.
-  - Six are recovery assessments that pair wearable HRV and resting HR with a **synthetic self-report** ("exhausted", "rested", …): two conflicts, two agreements, a report logged after the question time, and a stale report.
-  - Four are sleep/HRV relationship questions over 10 paired days:
-    - an observational association;
-    - the same pattern, confounded by a co-varying stress report;
-    - the same pattern, with sleep length **assigned** by a recorded protocol. This is the only case labelled causal-supported, and that label is a fixture assumption.
-    - no pattern.
-  - Seven are labelled for uncertainty/abstention, reusing the fixtures above:
-    - two where a direct answer is supported;
-    - only 2 of 7 days of data;
-    - a question about sleep stages the data doesn't contain;
-    - mixed wearable signals;
-    - a wearable/self-report conflict;
-    - an out-of-scope "Am I getting sick?".
-- **PHIA:** two cases on PHIA synthetic user 465, the 7- and 14-day mean resting HR. The 14-day window has a missing day in the source data. Expected values were **recomputed by PulseEval** from the published CSV, and every case records its provenance.
-  - PHIA's own objective-query labels are *not* used as ground truth. They could not be reproduced from the published CSVs; for example, user 465's 7-day mean resting HR recomputes to 61.63, while PHIA's label is 61.18. Details are in `PROJECT_CONTEXT.md` §8.
-  - PHIA is CC BY-NC 4.0 (Merrill et al., arXiv:2406.06464).
-- **MMASH:** source and license verified, not yet used. Its questionnaires are a candidate real self-report source later.
+- **Synthetic fixtures (41 cases):** hand-written timelines for three synthetic members, covering goals, resting HR, HRV, sleep, stress reports and recovery self-reports.
+  - Every expected value is derived by hand and written into the case, with its provenance.
+  - Labels such as causal support or evidence sufficiency are fixture judgements, not physiological findings.
+- **PHIA (2 cases):** two cases on synthetic user 465 from the PHIA repository (Merrill et al., arXiv:2406.06464, CC BY-NC 4.0): the 7- and 14-day mean resting HR, where the 14-day window has a missing day in the source data.
+  - **PHIA's published labels are not used as ground truth.** They could not be reproduced from the published CSVs; for example, user 465's 7-day mean resting HR recomputes to 61.63, while PHIA's label is 61.18.
+  - Expected values are recomputed by PulseEval, and each case records this.
+- **MMASH:** source and license were verified, but it is not used in this version.
 
 ## Limitations
 
-- The agent is rule-based, not an LLM. It validates the evaluation pipeline and does not measure real agent behaviour.
-- **What PulseEval is not:** PulseEval is an evaluation framework for longitudinal health-agent behaviour. It does not establish clinical truth, estimate clinical risk, perform causal inference, or provide medical advice.
-- There are 41 synthetic cases plus 2 PHIA-derived ones. The self-reports, relationships and certainty labels are synthetic. Results say nothing about real agents.
-- **Parser language boundaries** (documented as strict expected-failures in `tests/test_wording.py`):
+- **Rule-based system under test:** the agent is deterministic and rule-based, so results characterise the evaluators, not real (for example, LLM-based) agents.
+- **Synthetic, small benchmark:** 41 synthetic cases plus 2 PHIA-derived ones. The self-reports, relationships and certainty labels are synthetic.
+- **Parser language boundaries** (strict expected-failures in `tests/test_wording.py`):
   - reported speech ("your coach said …") is treated as the agent's own claim;
-  - double negation isn't resolved;
+  - double negation is not resolved;
   - conflict or uncertainty expressed only through unlisted wording ("opposite directions", "grain of salt") is missed;
-  - single-quoted phrases aren't masked.
-- Temporal consistency checks what was knowable at the question time. Record-ordering mistakes show up in grounding and answer correctness instead.
-- Answer analysis uses lexical English heuristics. It misses paraphrases and cross-sentence negation, and fails answers it cannot parse rather than passing them.
-- Missing-data handling assumes one expected observation per day, and its coverage parsing is lexical.
-- Contradiction handling detects conflict, dismissal and verdict wording lexically. Its "good / poor recovery" labels are a fixture convention, not a physiological standard.
-- Causal restraint judges wording against case labels; it is not causal inference. Its parsing is clause-based and lexical, and a causal claim must name both variables in one clause to be detected.
-- Uncertainty/abstention relies on hand labels of evidence sufficiency and lexical parsing. It is not a confidence or risk estimate.
-- Not yet implemented: memory evaluation (Phase 3).
+  - single-quoted phrases are not masked.
+- **Lexical analysis:** answer-text analysis uses English heuristics at the clause level. It misses paraphrases and cross-sentence negation, and it fails answers it cannot parse rather than passing them.
+  - A causal claim must name both variables in one clause to be detected.
+- **Temporal consistency versus record ordering:** temporal consistency checks knowability at the question time, not record ordering. Ordering mistakes surface in grounding and answer correctness.
+- **Missing-data handling** assumes one expected observation per day.
+- **Contradiction handling's "good / poor recovery" labels** are a fixture convention, not a physiological standard.
+- **Causal restraint** judges wording against labels. It is not causal inference.
+- **Uncertainty / abstention** is a behavioural check against labels. It is not a statistical, clinical or probabilistic confidence estimate.
+
+## Status
+
+**Complete and frozen.**
+
+| Phase | Scope | Commit |
+|---|---|---|
+| 1 | Minimal vertical slice | `c9a794d` |
+| 2 | Seven evaluation dimensions | `fd6f489` |
+| 3 | Hardening and benchmark validation | `2c2a813` |
+| 4 | Finalisation and presentation | this commit |
+
+Engineering history, design decisions (ADR-001 to ADR-013) and validation details are in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).

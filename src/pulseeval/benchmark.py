@@ -279,6 +279,21 @@ def render(cases: list[Case] = CASES) -> str:
                 lines.append(f"- {f.failure_type.value} `{d}/{f.check}`: {f.actual_behavior[:220]}")
         lines.append("")
 
+    lines += ["## Scope and limitations", "",
+              "- PHIA: 2 PHIA-derived cases (user 465, 7- and 14-day mean resting HR) are "
+              "evaluated by the test suite when the data is present locally; their expected "
+              "values are recomputed by PulseEval, and PHIA's own labels are not used as "
+              "ground truth.",
+              "- The agent under test is rule-based with injected faults: these results "
+              "characterise the evaluators, not real agents.",
+              "- Dimensions are separately evaluated behavioural properties, not statistically "
+              "independent measures; overlaps are listed above.",
+              "- Temporal consistency checks knowability at the question time, not record "
+              "ordering (ordering errors surface in grounding and answer correctness).",
+              "- Parser language boundaries (strict xfails in tests/test_wording.py): reported "
+              "speech, double negation, conflict or uncertainty stated only in unlisted "
+              "wording, and single-quoted phrases.", ""]
+
     lines += ["## Per-case failing dimensions", "",
               "Letters are failing dimensions; `.` = all applicable dimensions pass.", ""]
     lines += _md_table(["case"] + list(AGENT_CONFIGS),

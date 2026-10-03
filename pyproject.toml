@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pulseeval"
-version = "0.1.0"
-description = "Longitudinal reliability evaluation for personal-health agents"
+version = "1.0.0"
+description = "Deterministic evaluation framework for longitudinal health-agent behaviour"
 requires-python = ">=3.10"
 dependencies = ["pydantic>=2"]
 

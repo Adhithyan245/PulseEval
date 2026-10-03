@@ -1,1 +1,1 @@
-"""PulseEval: longitudinal reliability evaluation for personal-health agents."""
+"""PulseEval: a deterministic evaluation framework for longitudinal health-agent behaviour."""

@@ -2,24 +2,24 @@
 
 ## CURRENT STATUS
 
-Phase: 3 — Hardening & Benchmark Validation (user-redefined; see change log)
+Phase: 4 — Finalisation & freeze (final phase of this version)
 
-Status: COMPLETE (Phase 3; stopped for review — no Phase 4, no push)
+Status: COMPLETE — FROZEN. No further development on this version; any future work starts as a separate project version.
 
 Last completed:
-Phase 3 hardening: 41 synthetic cases (+17), adversarial wording matrix, 6 parser/evaluator defects found and fixed with regression tests, fault and independence matrices, metamorphic tests, provenance/PHIA-boundary tests, 14/14 mutations detected, clean-copy reproduction, BENCHMARK.md (ADR-013). 429 passed + 7 xfailed with PHIA; 424 passed + 5 skipped + 7 xfailed without.
+Phase 4: final repository audit, portfolio README, BENCHMARK.md scope/limitations section (presentation text only; all generated numbers unchanged), handoff cleanup of this document, final validation and clean-copy reproduction.
 
 Currently working on:
-Nothing — awaiting review.
+Nothing.
 
 Next task:
-None scheduled (user: stop after Phase 3). Memory evaluation remains deferred.
+None (frozen).
 
 Blocked by:
 None.
 
 Last architecture change:
-ADR-013 (benchmark module + committed, test-verified BENCHMARK.md) — Implemented.
+ADR-013 (benchmark module + committed, test-verified BENCHMARK.md) — Implemented. No architecture change in Phase 4.
 
 Last context update:
 2026-10-02
@@ -214,8 +214,7 @@ Deterministic-first. No LLM judge. Evaluators are versioned (`*_EVALUATOR_VERSIO
 | Contradiction handling (wearable vs self-report) | **Implemented** v0.1.1 (assessment cases, synthetic self-reports) |
 | Causal restraint | **Implemented** v0.1.0 (relationship cases) |
 | Uncertainty/abstention | **Implemented** v0.1.0 (certainty-labelled cases) |
-| Memory validity | Planned (Phase 3) |
-| Personalization, tool-call correctness | Planned (Phase 2–4) |
+| Memory validity, personalization, tool-call correctness | Not implemented in this version (out of scope; frozen) |
 
 **temporal_consistency** — `TEMPORAL_FAILURE`:
 - `no_unknowable_records` — nothing retrieved or cited has `recorded_at` or `event_time` after as_of.
@@ -296,7 +295,7 @@ PHIA-derived (user 465, as_of 2023-11-01, tol 0.05): `phia465_rhr_mean_7d` (61.6
 
 Unit-test perturbations: adversarial answer texts (negated, past, hedged, stale, both values, ranges, missing unit); grounding perturbations (fabricated id, irrelevant in-window record, wrong record type, missing reading, no evidence, out-of-window reading, future record cited as support, unsupported numeric claim, stale record silently cited vs explicitly framed); missing-data perturbations on a synthetic 14-day window (complete with/without statement; 13/14 acknowledged five ways; unacknowledged; presented as complete three ways; imputation wording; value for the missing date in ISO and month-name form; 14 readings claimed; understated count; spurious gap on a complete window; correct number + false completeness; wrong number + correct coverage; temporal violation + correct coverage); contradiction perturbations (conflict acknowledged three ways; wearable only; self-report only + verdict; conflict not named; conflict named then resolved; self-report dismissed; wearable dismissed; agreement with/without invented conflict; negated conflict; verdict when sources agree; negated dismissal); causal parser tests (association phrasings, six asserted claims, negated / uncertain / hypothetical / hedged / quoted, qualifiers vs. non-qualifiers, unrelated "because", direction) and evaluator tests (restrained answers, unsupported claims, hypothetical-only, confounded, supported (permitted / wrong direction), no-pattern, the four independence cases, non-applicability); certainty parser tests (refusals, limitations, hedges, strong words under negation / refusal / hypothetical / quote, "not clearly", unqualified certainty, definitive conclusions incl. negative) and evaluator tests (direct plain / cautious / confident, refusing a supported answer, sparse with / without uncertainty, ambiguous, conflict, out-of-scope abstention vs. conclusion vs. hedge, fabricated sleep stages, quoted / hypothetical framing, both independence directions, non-applicability).
 
-Planned: stale memory, missing context, counterfactual.
+Not covered in this version: stale-memory lifecycle, counterfactual variation.
 
 ## 14. Metrics and Benchmark Methodology
 
@@ -309,12 +308,19 @@ Per evaluator: pass rate = passed applicable cases / applicable cases (ADR-009).
 - **Metamorphic invariants (`test_invariants.py`):** timeline record order (all agents except `input_order`), an unrelated record far outside every window, cited-id order, answer letter case and whitespace, repeated runs and case order — all leave every check outcome unchanged.
 - **Provenance/reproducibility (`test_provenance.py`):** unique case ids, provenance and semantics on every case, every failure traceable to case question, member, agent config and real record ids; no randomness or wall-clock reads in `src/`; PHIA labels never read; PHIA-enabled and PHIA-disabled runs agree on all synthetic cases.
 - **Mutation checks (temporary source patches, restored and verified byte-identical):** 14/14 detected — temporal boundary (15 failing tests), grounding window (7), missing-data acknowledgement (11) and completeness (5), contradiction negation of conflict (1) and dismissal (1), causal context (2) and negation (4), uncertainty refusals (6) and negated certainty (1, after adding a test for the one surviving mutant), and each Phase 3 fix (16, 3, 1, 10).
+- **Reproduce:** Python ≥ 3.10; `pip install -e ".[dev]"`; `python -m pytest` (without PHIA data: 424 passed, 5 skipped, 7 xfailed; with it: 429 passed, 7 xfailed); `python -m pulseeval --benchmark` must equal BENCHMARK.md (enforced by tests/test_benchmark.py).
 - **Clean-copy reproduction:** the staged tree exported with `git checkout-index` into a fresh directory, fresh venv, `pip install -e ".[dev]"` (resolved pydantic 2.13.5 vs. 2.9.2 in development): 424 passed, 5 skipped (PHIA absent), 7 xfailed; `python -m pulseeval --benchmark` byte-identical to BENCHMARK.md and on repeat.
 
 ## 15. Development Phases
 
-Roadmap revised 2026-10-02 (user): Phase 3 = Hardening & Benchmark Validation; memory evaluation moves to a later phase (not scheduled).
-0 Audit ✅ · 1 Vertical slice ✅ · 2 Core evaluation ✅ (7/7 dimensions; frozen at fd6f489) · 3 Hardening & benchmark validation ✅ · later, unscheduled: memory evaluation, real self-report data (MMASH), LLM-backed system under test, UI, research extensions.
+| Phase | Scope | Status | Commit |
+|---|---|---|---|
+| 0 / 1 | Audit; minimal vertical slice | Complete | c9a794d |
+| 2 | Core evaluation: 7 independent dimensions | Complete (frozen) | fd6f489 |
+| 3 | Hardening & benchmark validation (redefined by the user from "memory evaluation") | Complete (frozen) | 2c2a813 |
+| 4 | Finalisation, documentation, presentation | Complete — **project frozen** | final commit |
+
+Development of this version is frozen. Memory evaluation, real self-report data (MMASH), an LLM-backed system under test and a UI were never part of this version's delivered scope; any of them would start as a separate project version.
 
 ## 16. Completed Work
 
@@ -322,15 +328,16 @@ Roadmap revised 2026-10-02 (user): Phase 3 = Hardening & Benchmark Validation; m
 - Phase 1: vertical slice.
 - Phase 2 (partial): temporal answer check hardened; numerical evaluator; dataset verification; PHIA mapping investigation; evaluators split by dimension; evidence grounding; minimal PHIA adapter; missing-data handling; contradiction handling (synthetic self-reports); causal restraint (RelationshipCase); uncertainty/abstention (certainty labels, OpenQuestionCase). Phase 2 complete.
 - Phase 3 (hardening & benchmark validation): see §14 and the change log.
+- Phase 4 (finalisation): repository audit, portfolio README, benchmark scope/limitations section, handoff cleanup, final validation; project frozen.
 - Git: `origin` = https://github.com/Adhithyan245/PulseEval.git; history rewritten 2026-10-02 to remove Claude co-author trailers (user decision); commits use the user's identity only.
 
 ## 17. In-Progress Work
 
 None (stopped for review).
 
-## 18. Planned Work
+## 18. Future Work (outside this frozen version)
 
-1. Nothing scheduled. Candidate later work (not started): memory evaluation; real self-report data (MMASH); an LLM-backed system under test.
+None scheduled. Candidates, each requiring a new project version: memory-lifecycle evaluation; real self-report data (MMASH questionnaires); an LLM-backed system under test; widening the parser's supported language (§12 boundary list).
 3. Later (deferred by user): MMASH questionnaires as a real self-report source for contradiction cases.
 
 ## 19. Deferred Work
@@ -588,8 +595,9 @@ Scope impact: Minor
 
 ### 2026-10-02 — Roadmap: Phase 3 redefined as Hardening & Benchmark Validation
 
-Status: Accepted
+Status: Implemented
 Original plan: Phase 3 = memory evaluation; Phase 4 adversarial suite; Phase 5 benchmarking; Phase 6 reporting.
+(Status note: implemented in Phase 3; Phase 4 then became finalisation and freeze.)
 Change: user redefined Phase 3 as hardening and benchmark validation (benchmark expansion, adversarial wording, independence/fault matrices, metamorphic tests, provenance/reproducibility, consolidated report). Phase 2 is frozen: no evaluator redesign, no eighth dimension; defects get minimal fixes with regression tests. Memory evaluation is deferred, unscheduled.
 Reason: user decision.
 Impact: §15 roadmap note; ADR-013.
@@ -606,7 +614,20 @@ Impact: Baseline (fd6f489, verified): 258 passed with PHIA; 254 + 4 skipped with
 Files affected: scenarios.py, benchmark.py (new), __main__.py, evaluation/{text,answer,grounding,missing_data,contradiction,causal,uncertainty}.py, tests (5 new files; test_suite, test_contradiction, test_uncertainty updated), BENCHMARK.md (new), README.md, PROJECT_CONTEXT.md.
 Scope impact: Minor (no new dimension, no evaluator redesign)
 
+### 2026-10-02 — Phase 4: finalisation & freeze
+
+Status: Implemented
+Original plan: (user-defined) final documentation and presentation phase; no functionality.
+Change: README rewritten for a first-time reader (purpose, scope boundary, seven dimensions, architecture, benchmark, hardening, failure examples, reproduction, limitations, status); BENCHMARK.md gains a generated "Scope and limitations" section (static text in `render()`; every generated number unchanged, verified by diff); this document's status, roadmap and obsolete "planned" language updated; final audit (no secrets, no data, no stray files), validation and clean-copy reproduction.
+Reason: make the frozen work understandable, reproducible and defensible.
+Impact: no code-behaviour change; test counts unchanged (429 + 7 xfailed with PHIA; 424 + 5 skipped + 7 xfailed without). Project frozen.
+Package metadata aligned with the final narrative (pyproject description; version 1.0.0 marks the frozen release; not printed in any result).
+Files affected: README.md, BENCHMARK.md, src/pulseeval/benchmark.py (report text only), pyproject.toml, src/pulseeval/__init__.py (docstring), PROJECT_CONTEXT.md.
+Scope impact: None
+
 ## 24. Rules for Future Changes
+
+**This version is frozen.** The rules below apply to any future version.
 
 - Read CURRENT STATUS first; keep it true.
 - Plan/architecture/scope changes: update this file (ADR + change log) **before** code.

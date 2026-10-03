@@ -164,6 +164,14 @@ The reverse direction: the evidence supports a direct answer, the agent gathers 
 
 - ABSTENTION_FAILURE `uncertainty_abstention/no_unnecessary_abstention`: Label: direct_answer_supported. Answer: "I can't determine that from the available data.". Parsed: abstention=True, refusals=1, limitations=1, hedged=False, certainty=none, definitive conclusions=none.
 
+## Scope and limitations
+
+- PHIA: 2 PHIA-derived cases (user 465, 7- and 14-day mean resting HR) are evaluated by the test suite when the data is present locally; their expected values are recomputed by PulseEval, and PHIA's own labels are not used as ground truth.
+- The agent under test is rule-based with injected faults: these results characterise the evaluators, not real agents.
+- Dimensions are separately evaluated behavioural properties, not statistically independent measures; overlaps are listed above.
+- Temporal consistency checks knowability at the question time, not record ordering (ordering errors surface in grounding and answer correctness).
+- Parser language boundaries (strict xfails in tests/test_wording.py): reported speech, double negation, conflict or uncertainty stated only in unlisted wording, and single-quoted phrases.
+
 ## Per-case failing dimensions
 
 Letters are failing dimensions; `.` = all applicable dimensions pass.
