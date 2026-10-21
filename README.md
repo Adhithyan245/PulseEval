@@ -256,6 +256,12 @@ python -m pulseeval --phia data/raw/phia
 | Phase 2 | Seven evaluation dimensions | `fd6f489` |
 | Phase 3 | Hardening and benchmark validation | `2c2a813` |
 | v1.0 (Phase 4) | Finalisation and presentation | `c0fe7ed` |
-| v1.1 | External-agent interface, CI | this commit |
+| v1.1 | External-agent interface, CI | `b31860c` |
 
 Engineering history, design decisions (ADR-001 to ADR-014) and validation details are in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
+
+## License
+
+The PulseEval code is released under the [MIT License](LICENSE).
+
+The license does not cover PHIA data. PHIA is a third-party dataset under CC BY-NC 4.0 (Merrill et al.). It is not included in this repository, and anyone who uses it must follow its own terms.
