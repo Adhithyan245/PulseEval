@@ -1,5 +1,7 @@
 # PulseEval
 
+[![CI](https://github.com/Adhithyan245/PulseEval/actions/workflows/ci.yml/badge.svg)](https://github.com/Adhithyan245/PulseEval/actions/workflows/ci.yml)
+
 **A deterministic evaluation framework for testing longitudinal health-agent behaviour across temporal consistency, evidence grounding, answer correctness, missing-data handling, contradiction handling, causal restraint, and uncertainty/abstention.**
 
 > **Scope:** PulseEval evaluates whether an agent's answer is behaviourally consistent with structured longitudinal evidence and the semantics of the evaluation case. It does **not** establish clinical truth, estimate clinical risk, perform causal inference, or provide medical advice. It is an evaluation framework, not a medical system.
@@ -63,6 +65,7 @@ Benchmark: every agent configuration x every case  ->  BENCHMARK.md
 | `agent.py` | Small rule-based agent (the system under test) with fault switches |
 | `evaluation/` | One module per dimension, plus `text.py` (clause-level answer-text analysis) and `schemas.py` |
 | `benchmark.py` | Runs all agent configurations, analyses faults/independence/overlaps, renders `BENCHMARK.md` |
+| `external.py` | Blind case export and scoring of any external agent's answers |
 
 ## Benchmark
 
@@ -96,6 +99,45 @@ All examples are from the generated benchmark.
 | Right records and group means, but "sleeping less caused your HRV to drop" (`relation_association_only`) | causal restraint | Everything else passes; the case labels association only. |
 | Cites both sources, then "you are actually well recovered" despite reported exhaustion (`recovery_conflict_good_data_exhausted`) | contradiction | Grounding passes (both sources cited); the conflict is dismissed. |
 | Uses a reading synced after the question time (`rhr_mean_7d_late_sync`) | temporal | Answer and missing data fail as consequences; grounding passes (the reading is relevant and in-window). |
+
+## Evaluate your own agent
+
+PulseEval can score any agent (LLM-based, rule-based, or a human), not only the built-in one.
+
+**1. Export the cases.** This writes each case's question, question time and full timeline to JSON. It is *blind*: expected values, labels and provenance are withheld.
+
+```bash
+python -m pulseeval --export-cases cases.json
+```
+
+**2. Answer them with your agent.** Return one entry per case, and cite the `record_id`s you relied on:
+
+```json
+{"format": "pulseeval-answers/1", "agent": "my-agent", "answers": [
+  {"case_id": "rhr_mean_7d",
+   "final_answer": "Your average resting heart rate over the last 7 days was 54.9 bpm (all 7 days had data).",
+   "evidence_used": ["r0325", "r0326", "r0327", "r0328", "r0329", "r0330", "r0331"],
+   "abstention": false}
+]}
+```
+
+`retrieved_context` is optional and defaults to `evidence_used`.
+
+The timeline deliberately includes records that were only logged *after* the question time. Using them is scored as a temporal failure, exactly as for the built-in agent.
+
+**3. Score them.** This prints the same per-dimension report; add `--json` for full results. Cases you didn't answer are listed rather than silently skipped.
+
+```bash
+python -m pulseeval --evaluate answers.json
+```
+
+To see a complete, valid answers file, write the built-in agent's answers in the same format:
+
+```bash
+python -m pulseeval --agent reference --write-answers answers.json
+```
+
+A test checks the path end to end: for every built-in agent configuration, exporting its answers and evaluating them externally reproduces its built-in results check-for-check.
 
 ## Hardening (Phase 3)
 
@@ -143,11 +185,11 @@ pip install -e ".[dev]"
 python -m pytest
 ```
 
-Without the optional PHIA data, expect **424 passed, 5 skipped, 7 xfailed**:
+Without the optional PHIA data, expect **442 passed, 5 skipped, 7 xfailed**:
 - **5 skipped:** the tests that need PHIA data.
 - **7 xfailed:** the documented parser language boundaries.
 
-With PHIA data present, expect 429 passed and 7 xfailed. Both also hold with `--strict-markers`.
+With PHIA data present, expect 447 passed and 7 xfailed. Both also hold with `--strict-markers`.
 
 ```bash
 python -m pulseeval --benchmark
@@ -165,7 +207,9 @@ python -m pulseeval --agent reference
 python -m pulseeval --agent overconfident --json
 ```
 
-`--agent` accepts any of the 11 configurations; `--json` prints the full results.
+`--agent` accepts any of the 11 configurations; `--json` prints the full results. See [Evaluate your own agent](#evaluate-your-own-agent) for `--export-cases`, `--write-answers` and `--evaluate`.
+
+CI runs the full suite on Python 3.10–3.13 for every push. It also regenerates the benchmark and fails if the output differs from `BENCHMARK.md`.
 
 **Optional PHIA data:** to include the two PHIA-derived cases, place PHIA's `synthetic_wearable_users/summary_df_465.csv` in `data/raw/phia/`. The file is not distributed with this repository and is git-ignored. Then run:
 
@@ -185,7 +229,9 @@ python -m pulseeval --phia data/raw/phia
 
 ## Limitations
 
-- **Rule-based system under test:** the agent is deterministic and rule-based, so results characterise the evaluators, not real (for example, LLM-based) agents.
+- **Rule-based system under test:** the built-in agent is deterministic and rule-based, so the published benchmark characterises the evaluators, not real (for example, LLM-based) agents.
+  - Real agents can be scored through [Evaluate your own agent](#evaluate-your-own-agent), but no such results are published here.
+  - Their scores will also inherit the parser language boundaries below, which matter more for freely worded LLM answers.
 - **Synthetic, small benchmark:** 41 synthetic cases plus 2 PHIA-derived ones. The self-reports, relationships and certainty labels are synthetic.
 - **Parser language boundaries** (strict expected-failures in `tests/test_wording.py`):
   - reported speech ("your coach said …") is treated as the agent's own claim;
@@ -202,13 +248,14 @@ python -m pulseeval --phia data/raw/phia
 
 ## Status
 
-**Complete and frozen.**
+**v1.1.** The evaluators, cases and benchmark results are unchanged since v1.0. v1.1 adds the external-agent interface and CI.
 
-| Phase | Scope | Commit |
+| Version / phase | Scope | Commit |
 |---|---|---|
-| 1 | Minimal vertical slice | `c9a794d` |
-| 2 | Seven evaluation dimensions | `fd6f489` |
-| 3 | Hardening and benchmark validation | `2c2a813` |
-| 4 | Finalisation and presentation | this commit |
+| Phase 1 | Minimal vertical slice | `c9a794d` |
+| Phase 2 | Seven evaluation dimensions | `fd6f489` |
+| Phase 3 | Hardening and benchmark validation | `2c2a813` |
+| v1.0 (Phase 4) | Finalisation and presentation | `c0fe7ed` |
+| v1.1 | External-agent interface, CI | this commit |
 
-Engineering history, design decisions (ADR-001 to ADR-013) and validation details are in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).
+Engineering history, design decisions (ADR-001 to ADR-014) and validation details are in [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md).

@@ -2,24 +2,24 @@
 
 ## CURRENT STATUS
 
-Phase: 4 — Finalisation & freeze (final phase of this version)
+Phase: v1.1 — External-agent interface & CI (user-requested enhancement after the v1.0 freeze)
 
-Status: COMPLETE — FROZEN. No further development on this version; any future work starts as a separate project version.
+Status: COMPLETE (v1.1)
 
 Last completed:
-Phase 4: final repository audit, portfolio README, BENCHMARK.md scope/limitations section (presentation text only; all generated numbers unchanged), handoff cleanup of this document, final validation and clean-copy reproduction.
+v1.1: external-agent interface (blind case export, scoring of any agent's answers; ADR-014) and GitHub Actions CI (Python 3.10–3.13, tests + benchmark reproduction). v1.0 evaluators, cases and BENCHMARK.md unchanged. 447 passed + 7 xfailed with PHIA; 442 passed + 5 skipped + 7 xfailed without.
 
 Currently working on:
 Nothing.
 
 Next task:
-None (frozen).
+None scheduled. Natural next step (not started): run a real LLM-backed agent through the external interface and publish its results separately.
 
 Blocked by:
 None.
 
 Last architecture change:
-ADR-013 (benchmark module + committed, test-verified BENCHMARK.md) — Implemented. No architecture change in Phase 4.
+ADR-014 (external-agent interface) — Implemented.
 
 Last context update:
 2026-10-02
@@ -59,6 +59,8 @@ Not a health chatbot, diagnosis/treatment/clinical-decision system, generic RAG 
 | Uncertainty/abstention evaluator v0.1.1 (certainty-labelled cases only) | Implemented, tested |
 | Scenarios v0.8.0: 41 synthetic cases (9 state, 12 numeric, 11 assessment, 6 relationship, 3 open), each with `provenance`; 11 certainty-labelled | Implemented |
 | Benchmark (`benchmark.py`, `python -m pulseeval --benchmark`, BENCHMARK.md) | Implemented, test-verified |
+| External-agent interface (`external.py`; `--export-cases`, `--write-answers`, `--evaluate`) | Implemented, tested (round-trip equal for all 11 configs) |
+| CI (`.github/workflows/ci.yml`: Python 3.10–3.13, tests + benchmark diff) | Implemented |
 | PHIA adapter (`phia.py`): 1 user, 2 numeric cases, PulseEval-recomputed values | Implemented, tested (skips without local data) |
 | CLI report (`python -m pulseeval [--phia DIR]`) | Implemented |
 | MMASH | Verified (§8); not downloaded |
@@ -96,6 +98,7 @@ src/pulseeval/
   __init__.py
   __main__.py          # CLI: runs suite, prints report / JSON; --phia DIR; --benchmark
   benchmark.py         # agent configs, fault intent, independence/overlap analysis, report
+  external.py          # blind case export; scoring of external agents' answers (ADR-014)
   timeline.py          # Record, MemberTimeline (as-of semantics)
   agent.py             # SUT: tools, HealthAgent, ToolCall, AgentTrace
   scenarios.py         # StateCase, NumericCase, fixture cases
@@ -115,6 +118,8 @@ tests/
   test_timeline.py  test_temporal.py  test_grounding.py  test_answer.py  test_missing_data.py
   test_contradiction.py  test_causal.py  test_uncertainty.py  test_suite.py  test_phia.py
   test_regressions.py  test_wording.py  test_invariants.py  test_provenance.py  test_benchmark.py
+  test_external.py
+.github/workflows/ci.yml   # CI: pytest --strict-markers + benchmark reproduction on 3.10-3.13
 data/raw/            # git-ignored; local copies only (data/raw/phia/: 14 files, ~700 KB)
 ```
 
@@ -308,7 +313,7 @@ Per evaluator: pass rate = passed applicable cases / applicable cases (ADR-009).
 - **Metamorphic invariants (`test_invariants.py`):** timeline record order (all agents except `input_order`), an unrelated record far outside every window, cited-id order, answer letter case and whitespace, repeated runs and case order — all leave every check outcome unchanged.
 - **Provenance/reproducibility (`test_provenance.py`):** unique case ids, provenance and semantics on every case, every failure traceable to case question, member, agent config and real record ids; no randomness or wall-clock reads in `src/`; PHIA labels never read; PHIA-enabled and PHIA-disabled runs agree on all synthetic cases.
 - **Mutation checks (temporary source patches, restored and verified byte-identical):** 14/14 detected — temporal boundary (15 failing tests), grounding window (7), missing-data acknowledgement (11) and completeness (5), contradiction negation of conflict (1) and dismissal (1), causal context (2) and negation (4), uncertainty refusals (6) and negated certainty (1, after adding a test for the one surviving mutant), and each Phase 3 fix (16, 3, 1, 10).
-- **Reproduce:** Python ≥ 3.10; `pip install -e ".[dev]"`; `python -m pytest` (without PHIA data: 424 passed, 5 skipped, 7 xfailed; with it: 429 passed, 7 xfailed); `python -m pulseeval --benchmark` must equal BENCHMARK.md (enforced by tests/test_benchmark.py).
+- **Reproduce (v1.1):** Python ≥ 3.10; `pip install -e ".[dev]"`; `python -m pytest` (without PHIA data: 442 passed, 5 skipped, 7 xfailed; with it: 447 passed, 7 xfailed); `python -m pulseeval --benchmark` must equal BENCHMARK.md (enforced by tests/test_benchmark.py).
 - **Clean-copy reproduction:** the staged tree exported with `git checkout-index` into a fresh directory, fresh venv, `pip install -e ".[dev]"` (resolved pydantic 2.13.5 vs. 2.9.2 in development): 424 passed, 5 skipped (PHIA absent), 7 xfailed; `python -m pulseeval --benchmark` byte-identical to BENCHMARK.md and on repeat.
 
 ## 15. Development Phases
@@ -318,9 +323,10 @@ Per evaluator: pass rate = passed applicable cases / applicable cases (ADR-009).
 | 0 / 1 | Audit; minimal vertical slice | Complete | c9a794d |
 | 2 | Core evaluation: 7 independent dimensions | Complete (frozen) | fd6f489 |
 | 3 | Hardening & benchmark validation (redefined by the user from "memory evaluation") | Complete (frozen) | 2c2a813 |
-| 4 | Finalisation, documentation, presentation | Complete — **project frozen** | final commit |
+| 4 | Finalisation, documentation, presentation (v1.0) | Complete | c0fe7ed |
+| v1.1 | External-agent interface (ADR-014), CI — user-requested after the v1.0 freeze | Complete | this commit |
 
-Development of this version is frozen. Memory evaluation, real self-report data (MMASH), an LLM-backed system under test and a UI were never part of this version's delivered scope; any of them would start as a separate project version.
+v1.0 was frozen at c0fe7ed; v1.1 adds the external-agent interface and CI without changing evaluators, cases or benchmark results. Memory evaluation, real self-report data (MMASH), running an LLM-backed agent and a UI are not part of the delivered scope.
 
 ## 16. Completed Work
 
@@ -337,7 +343,7 @@ None (stopped for review).
 
 ## 18. Future Work (outside this frozen version)
 
-None scheduled. Candidates, each requiring a new project version: memory-lifecycle evaluation; real self-report data (MMASH questionnaires); an LLM-backed system under test; widening the parser's supported language (§12 boundary list).
+None scheduled. Candidates: run an LLM-backed agent through the external interface (ADR-014) and publish its results separately from the evaluator benchmark; memory-lifecycle evaluation; real self-report data (MMASH questionnaires); widening the parser's supported language (§12 boundary list).
 3. Later (deferred by user): MMASH questionnaires as a real self-report source for contradiction cases.
 
 ## 19. Deferred Work
@@ -352,6 +358,7 @@ LLM-backed agent and LLM judge (until the deterministic layer is trusted — use
 - Answer-text analysis is lexical English heuristics: misses paraphrases ("training for a marathon" ≠ "marathon training"), sarcasm, conditionals, cross-sentence negation; errs toward failing answers it cannot parse.
 - Grounding `evidence_supports_claim` (state) only recognises claims of values that exist in the timeline; a fabricated free-text value is caught by answer_correctness, not grounding. Numeric support assumes the aggregate is a mean.
 - Numeric tolerance is absolute; number extraction requires the unit right after the number.
+- External agents (v1.1) are scored by the same lexical parsers, so freely worded LLM answers are more exposed to the §12 language boundaries than the built-in agent's templated answers; no external-agent results are published.
 - Benchmark scope: 41 synthetic cases from 3 synthetic members plus 2 PHIA-derived cases; results characterise the evaluators against a rule-based agent with injected faults, not real agents. Temporal consistency checks knowability at the question time, not record ordering (ordering errors surface in grounding/answer). Parser language boundaries: see §12 (strict xfail list).
 - Uncertainty/abstention: **behavioural, not statistical or clinical** — certainty labels are fixture judgements of evidence sufficiency. Parsing is lexical: uncertainty expressed only through unlisted wording ("I'd take this with a grain of salt") is missed; certainty words outside the list ("undeniably") are missed; `conclusion_terms` must be supplied per case; the structured `abstention` flag is trusted.
 - Causal restraint: **PulseEval judges causal language against case labels; it does not perform causal inference.** Causal-support labels are fixture assumptions (the protocol case is not evidence of a physiological effect). Parsing is lexical and clause-based: claims must mention both exposure and outcome terms in one clause ("That's because of your sleep." is missed); causal verbs used non-causally with both terms can false-positive; supported cases permit causal wording without checking that it cites the basis; direction is read only from unambiguous comparative pairs.
@@ -511,6 +518,17 @@ Trade-offs: one more module and one generated file; any behaviour change require
 Affected components: benchmark.py (new), __main__.py, BENCHMARK.md (new), tests.
 Scope impact: Minor
 
+### ADR-014 — External-agent interface (blind export, trace evaluation)
+
+Status: Implemented
+Date: 2026-10-21
+Original approach: only the built-in rule-based `HealthAgent` can be evaluated (a documented limitation: results characterise the evaluators, not real agents).
+New approach: `external.py` adds (1) `export_cases` — the benchmark questions, as-of times and timelines as JSON, with every expectation, label and provenance withheld (blind); (2) `evaluate_traces` — loads answers produced by any agent (case_id, final_answer, evidence_used, optional retrieved_context / abstention) and scores them with the unchanged seven evaluators. CLI: `--export-cases FILE`, `--evaluate FILE [--json]`. A round-trip test proves external evaluation of the reference agent's own answers reproduces `run_suite` exactly.
+Reason: let real (e.g. LLM-based) agents be benchmarked without changing evaluator semantics.
+Trade-offs: external agents must cite record ids from the exported timeline for grounding to pass; unanswered cases are reported, not silently skipped.
+Affected components: external.py (new), __main__.py, tests, README.
+Scope impact: Minor
+
 ## 23. Change Log
 
 ### 2026-10-02 — Phase 0 + Phase 1 vertical slice
@@ -625,9 +643,19 @@ Package metadata aligned with the final narrative (pyproject description; versio
 Files affected: README.md, BENCHMARK.md, src/pulseeval/benchmark.py (report text only), pyproject.toml, src/pulseeval/__init__.py (docstring), PROJECT_CONTEXT.md.
 Scope impact: None
 
+### 2026-10-21 — v1.1: external-agent interface and CI
+
+Status: Implemented
+Original plan: v1.0 frozen (c0fe7ed).
+Change (user request to enhance further): ADR-014 `external.py` (blind `export_cases`, `answers_from_agent`, `evaluate_traces`) and CLI flags `--export-cases`, `--write-answers`, `--evaluate`; CLI report printing moved into a function (built-in output verified byte-identical before/after); `tests/test_external.py` (blind export, round-trip equality for all 11 agent configs via real JSON, partial/malformed submissions, free-text answers, cited unknowable record); GitHub Actions CI on Python 3.10–3.13 running `pytest --strict-markers` and diffing a regenerated benchmark against BENCHMARK.md; README badge and "Evaluate your own agent" section; package version 1.1.0.
+Reason: the main documented limitation was that only the built-in rule-based agent could be evaluated.
+Impact: evaluators, cases and BENCHMARK.md unchanged (verified). Tests: 447 passed + 7 xfailed with PHIA; 442 passed + 5 skipped + 7 xfailed without.
+Files affected: src/pulseeval/external.py (new), src/pulseeval/__main__.py, tests/test_external.py (new), .github/workflows/ci.yml (new), README.md, pyproject.toml, PROJECT_CONTEXT.md.
+Scope impact: Minor
+
 ## 24. Rules for Future Changes
 
-**This version is frozen.** The rules below apply to any future version.
+The rules below apply to any further version.
 
 - Read CURRENT STATUS first; keep it true.
 - Plan/architecture/scope changes: update this file (ADR + change log) **before** code.
